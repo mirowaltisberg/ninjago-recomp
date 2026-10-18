@@ -81,3 +81,19 @@ def test_literal_pool_not_code():
     prog = discover_bytes(code, base_vaddr=0x3000, entries=[0x3000])
     assert 0x3008 not in prog.functions[0x3000].insns
     assert not prog.issues
+
+
+def test_symbol_parity_decides_mode(program, guest_elf):
+    """ELF marks Thumb functions with an odd symbol value; even named entries are ARM even inside the Thumb
+    runtime block (libgcc's 64-bit division helpers are ARM there)."""
+    lo, hi = guest_elf.text
+    for name, v in guest_elf.exported.items():
+        if not lo <= (v & ~1) < hi:
+            continue
+        if v & 1:
+            assert (v & ~1) in program.thumb_functions, name
+        elif (v & ~1) not in program.thumb_functions:
+            continue
+        else:
+            assert False, f"{name} at {v:#x} has an even (ARM) symbol but was classified Thumb"
+    assert guest_elf.exported["__aeabi_ldivmod"] in program.functions

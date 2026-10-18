@@ -132,3 +132,17 @@ NJ_TEST(override_resolve) {
     hle_register_override("no_such_symbol_t4", set7);
     NJ_EXPECT_FATAL(hle_resolve_overrides(&img), "no_such_symbol_t4");
 }
+
+NJ_TEST(override_by_code_checks_bytes) {
+    load_real();
+    hle_register_override("no_such_symbol_t4", NULL); /* left behind by override_resolve */
+    static const uint8_t acquire[] = {0x70, 0xb5, 0x04, 0x46}; /* push {r4-r6,lr}; mov r4,r0 (Thumb) */
+    hle_register_override_code(0x3ef470, acquire, sizeof acquire, "guard_acquire_t", set42);
+    hle_resolve_overrides(&img);
+    NJ_CHECK(hle_override_at(NJ_IMAGE_BASE + 0x3ef470) == set42);
+    static const uint8_t wrong[] = {0x00, 0x00, 0x00, 0x00};
+    hle_register_override_code(0x3ef4d4, wrong, sizeof wrong, "guard_wrong_t", set7);
+    NJ_EXPECT_FATAL(hle_resolve_overrides(&img), "guard_wrong_t");
+    hle_register_override_code(0x3ef4d4, wrong, sizeof wrong, "guard_wrong_t", NULL);
+    hle_register_override_code(0x3ef470, acquire, sizeof acquire, "guard_acquire_t", NULL);
+}

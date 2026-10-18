@@ -119,6 +119,7 @@ class _Discoverer:
         self.pool = set()
         self.entries = set()
         self.thumb_block = (0, 0)
+        self.named_arm = set()  # even-valued function symbols: ARM by the ELF convention
 
     def in_text(self, a):
         return self.lo <= a < self.hi
@@ -250,7 +251,8 @@ class _Discoverer:
     def classify(self, seeds):
         """Split entries into ARM entries and Thumb functions. ARM is the default; Thumb needs evidence:
         an odd address (symbol or relocated pointer), a BLX-immediate target, or, only inside the
-        statically linked Thumb runtime block, first words that do not look like ARM code."""
+        statically linked Thumb runtime block, first words that do not look like ARM code. An even-valued
+        function symbol is ARM regardless (libgcc's ARM helpers live inside that block)."""
         ordered = sorted(seeds)
         arm_entries = set()
         for i, e in enumerate(ordered):
@@ -258,7 +260,8 @@ class _Discoverer:
                 continue
             nxt = ordered[i + 1] if i + 1 < len(ordered) else self.hi
             in_block = self.thumb_block[0] <= e < self.thumb_block[1]
-            if e in self.prog.thumb_functions or (in_block and not _looks_arm(self.image, e, nxt)):
+            guessed_thumb = in_block and e not in self.named_arm and not _looks_arm(self.image, e, nxt)
+            if e in self.prog.thumb_functions or guessed_thumb:
                 self.prog.thumb_functions.setdefault(e, None)
             else:
                 arm_entries.add(e)
@@ -310,6 +313,7 @@ def discover(elf):
     seeds |= {e for e in elf.exidx_starts if elf.text[0] <= e < elf.text[1]}
     seeds |= elf.reloc_ptrs
     d = _Discoverer(elf)
+    d.named_arm = {v for v in elf.exported.values() if not v & 1 and elf.text[0] <= v < elf.text[1]}
     return d.run(seeds)
 
 

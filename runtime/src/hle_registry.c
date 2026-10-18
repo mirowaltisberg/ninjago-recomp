@@ -162,6 +162,38 @@ void hle_register_override(const char *symbol, NjHleFn fn) {
     pthread_mutex_unlock(&lock);
 }
 
+/* Overrides of unnamed functions, located by image offset and checked against their first bytes. */
+#define MAX_CODE_OVERRIDES 16
+static struct { uint32_t offset, n; uint8_t expect[16]; char *name; NjHleFn fn; } code_overrides[MAX_CODE_OVERRIDES];
+static uint32_t code_override_count;
+
+void hle_register_override_code(uint32_t offset, const uint8_t *expect, uint32_t n, const char *name, NjHleFn fn) {
+    pthread_mutex_lock(&lock);
+    uint32_t i = 0;
+    while (i < code_override_count && strcmp(code_overrides[i].name, name)) i++;
+    if (!fn) {
+        if (i < code_override_count) {
+            free(code_overrides[i].name);
+            code_overrides[i] = code_overrides[--code_override_count];
+        }
+        pthread_mutex_unlock(&lock);
+        return;
+    }
+    if (i == code_override_count) {
+        if (i == MAX_CODE_OVERRIDES || n > sizeof code_overrides[i].expect) {
+            pthread_mutex_unlock(&lock);
+            nj_fatal("cannot register code override %s", name);
+        }
+        code_overrides[i].name = strdup(name);
+        code_override_count++;
+    }
+    code_overrides[i].offset = offset;
+    code_overrides[i].n = n;
+    memcpy(code_overrides[i].expect, expect, n);
+    code_overrides[i].fn = fn;
+    pthread_mutex_unlock(&lock);
+}
+
 static int oa_cmp(const void *a, const void *b) {
     uint32_t x = ((const OverrideAddr *)a)->addr, y = ((const OverrideAddr *)b)->addr;
     return (x > y) - (x < y);
@@ -182,6 +214,18 @@ void hle_resolve_overrides(const NjImage *img) {
         }
         override_addrs[override_addr_count].addr = ga & ~1u;
         override_addrs[override_addr_count++].fn = e->fn;
+    }
+    for (uint32_t i = 0; i < code_override_count; i++) {
+        uint32_t ga = img->base + code_overrides[i].offset;
+        if (code_overrides[i].offset + code_overrides[i].n > img->size ||
+            memcmp(nj_host(ga), code_overrides[i].expect, code_overrides[i].n) != 0) {
+            const uint8_t *b = nj_host(ga);
+            pthread_mutex_unlock(&lock);
+            nj_fatal("override %s: unexpected code at 0x%08x: %02x %02x %02x %02x (different game build?)",
+                     code_overrides[i].name, ga, b[0], b[1], b[2], b[3]);
+        }
+        override_addrs[override_addr_count].addr = ga;
+        override_addrs[override_addr_count++].fn = code_overrides[i].fn;
     }
     qsort(override_addrs, override_addr_count, sizeof(OverrideAddr), oa_cmp);
     pthread_mutex_unlock(&lock);
