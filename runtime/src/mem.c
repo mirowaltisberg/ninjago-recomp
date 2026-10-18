@@ -15,6 +15,7 @@ typedef struct { uint64_t start, end; } Interval; /* [start, end) in guest addre
 static Interval intervals[NJ_MAX_INTERVALS];
 static int interval_count;
 static pthread_mutex_t mem_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool frozen;
 
 int nj_mem_init(void) {
     pthread_mutex_lock(&mem_lock);
@@ -51,6 +52,7 @@ static int add_interval(uint64_t start, uint64_t end) {
 }
 
 int nj_mem_map(uint32_t ga, uint32_t size, int prot) {
+    if (frozen) nj_fatal("guest memory is frozen: cannot map 0x%08x+0x%x after the CPU backend started", ga, size);
     if (!nj_mem || size == 0) return -1;
     uint64_t page = (uint64_t)getpagesize();
     uint64_t start = (uint64_t)ga & ~(page - 1);
@@ -71,7 +73,7 @@ int nj_mem_map_fixed_regions(void) {
     if (nj_mem_map(NJ_HLEDATA_BASE, NJ_HLEDATA_SIZE, rw)) return -1;
     if (nj_mem_map(NJ_STACK_BASE, NJ_STACK_SIZE * NJ_STACK_COUNT, rw)) return -1;
     if (nj_mem_map(NJ_THUNK_BASE, NJ_THUNK_SIZE, rw | NJ_PROT_X)) return -1;
-    if (nj_mem_map(NJ_RETURN_TRAP, 0x10000, rw | NJ_PROT_X)) return -1;
+    if (nj_mem_map(NJ_RETURN_TRAP, 0x4000, rw | NJ_PROT_X)) return -1;
     return 0;
 }
 
@@ -86,3 +88,13 @@ bool nj_mem_is_mapped(uint32_t ga, uint32_t size) {
     pthread_mutex_unlock(&mem_lock);
     return ok;
 }
+
+int nj_mem_intervals(uint64_t *starts, uint64_t *ends, int max) {
+    pthread_mutex_lock(&mem_lock);
+    int n = interval_count < max ? interval_count : max;
+    for (int i = 0; i < n; i++) { starts[i] = intervals[i].start; ends[i] = intervals[i].end; }
+    pthread_mutex_unlock(&mem_lock);
+    return n;
+}
+
+void nj_mem_set_frozen(bool f) { frozen = f; }

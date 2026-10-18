@@ -9,3 +9,9 @@ add_library(nj_runtime STATIC ${NJ_RUNTIME_SOURCES} ${NJ_DLMALLOC})
 target_include_directories(nj_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(nj_runtime PUBLIC Threads::Threads)
+
+# CPU backends (exactly one is linked per executable).
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(UNICORN REQUIRED IMPORTED_TARGET unicorn)
+add_library(nj_backend_uc STATIC backend/unicorn/uc_backend.c)
+target_link_libraries(nj_backend_uc PUBLIC nj_runtime PkgConfig::UNICORN)

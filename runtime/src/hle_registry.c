@@ -192,3 +192,9 @@ uint32_t hle_guest_strdup(const char *s) {
     memcpy(nj_host(ga), s, n);
     return ga;
 }
+
+uint32_t hle_override_list(uint32_t *addrs, uint32_t max) {
+    uint32_t n = override_addr_count < max ? override_addr_count : max;
+    for (uint32_t i = 0; i < n; i++) addrs[i] = override_addrs[i].addr;
+    return n;
+}

@@ -69,6 +69,10 @@ int nj_mem_map(uint32_t ga, uint32_t size, int prot);
 /* Map the fixed regions every backend expects before start: HLE data, all stacks, thunks. */
 int nj_mem_map_fixed_regions(void);
 bool nj_mem_is_mapped(uint32_t ga, uint32_t size);
+/* Copy the mapped intervals [start, end) (host-page rounded, sorted). Returns the count. */
+int nj_mem_intervals(uint64_t *starts, uint64_t *ends, int max);
+/* While frozen, nj_mem_map() is fatal: CPU backends snapshot the mapping at start. */
+void nj_mem_set_frozen(bool frozen);
 
 /* Print message (+ current guest context if known) and abort. */
 _Noreturn void nj_fatal(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

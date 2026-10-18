@@ -35,6 +35,8 @@ void hle_register_override(const char *symbol, NjHleFn fn);
 void hle_resolve_overrides(const NjImage *img);
 /* Override for a guest function address (Thumb bit ignored), NULL if none. */
 NjHleFn hle_override_at(uint32_t guest_fn_addr);
+/* Resolved override addresses (for backends that hook them). Returns the count. */
+uint32_t hle_override_list(uint32_t *addrs, uint32_t max);
 
 /* Bump allocation in the HLE data region (never freed). Fatal when exhausted. */
 uint32_t hle_data_alloc(uint32_t size, uint32_t align);
