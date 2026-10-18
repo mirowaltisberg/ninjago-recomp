@@ -49,6 +49,8 @@ class _Insn:
         self.ci = ci
         self.lc = lc
         self.word = int.from_bytes(ci.bytes, "little")
+        # S bit of data-processing and multiply encodings (capstone's update_flags is wrong for sbc)
+        self.s = bool(self.word >> 20 & 1)
 
     def unsupported(self, why=""):
         raise Unsupported(self.ci.mnemonic, self.ci.op_str, why)
@@ -103,30 +105,214 @@ def _three(ins):
     ins.unsupported("operand count")
 
 
+def _logic_result(ins, rd, expr, carry):
+    """Assign a logical result (rd may be None for tst/teq) and set N, Z, C when the instruction has S."""
+    out = [f"uint32_t res = {expr};"]
+    if rd is not None:
+        out.append(f"{ins.dest(rd.reg)} = res;")
+    if ins.s:
+        out.append(f"nj_logic_flags(c, res, {carry if carry is not None else 'c->c'});")
+    return out
+
+
 def lift_mov(ins):
     ops = ins.ci.operands
     if len(ops) != 2:
         ins.unsupported("operand count")
-    flags = ins.ci.update_flags
-    pre, v, carry = ins.op2(ops[1], want_carry=flags)
-    if not flags:
-        return pre + [f"{ins.dest(ops[0].reg)} = {v};"]
-    return pre + [f"uint32_t res = {v};", f"{ins.dest(ops[0].reg)} = res;",
-                  f"nj_logic_flags(c, res, {carry if carry is not None else 'c->c'});"]
+    pre, v, carry = ins.op2(ops[1], want_carry=ins.s)
+    if ins.ci.id == arm.ARM_INS_MVN:
+        v = f"~({v})"
+    return pre + _logic_result(ins, ops[0], v, carry)
+
+
+LOGIC_OP = {arm.ARM_INS_AND: "{a} & {b}", arm.ARM_INS_ORR: "{a} | {b}", arm.ARM_INS_EOR: "{a} ^ {b}",
+            arm.ARM_INS_BIC: "{a} & ~({b})", arm.ARM_INS_TST: "{a} & {b}", arm.ARM_INS_TEQ: "{a} ^ {b}"}
+
+
+def lift_logic(ins):
+    if ins.ci.id in (arm.ARM_INS_TST, arm.ARM_INS_TEQ):
+        rn, op = ins.ci.operands
+        rd = None
+    else:
+        rd, rn, op = _three(ins)
+    pre, v, carry = ins.op2(op, want_carry=ins.s)
+    return pre + _logic_result(ins, rd, LOGIC_OP[ins.ci.id].format(a=ins.read(rn.reg), b=v), carry)
+
+
+# (flag-setting helper and operand order, plain expression) for arithmetic
+ARITH_OP = {arm.ARM_INS_ADD: ("nj_adds(c, {a}, {b})", "{a} + {b}"),
+            arm.ARM_INS_SUB: ("nj_subs(c, {a}, {b})", "{a} - {b}"),
+            arm.ARM_INS_RSB: ("nj_subs(c, {b}, {a})", "{b} - {a}"),
+            arm.ARM_INS_ADC: ("nj_adcs(c, {a}, {b})", "{a} + {b} + c->c"),
+            arm.ARM_INS_SBC: ("nj_sbcs(c, {a}, {b})", "{a} - {b} - !c->c"),
+            arm.ARM_INS_RSC: ("nj_sbcs(c, {b}, {a})", "{b} - {a} - !c->c"),
+            arm.ARM_INS_CMP: ("nj_subs(c, {a}, {b})", None),
+            arm.ARM_INS_CMN: ("nj_adds(c, {a}, {b})", None)}
+
+
+def lift_arith(ins):
+    flags_fmt, plain_fmt = ARITH_OP[ins.ci.id]
+    if plain_fmt is None:  # cmp, cmn
+        rn, op = ins.ci.operands
+        pre, v, _ = ins.op2(op, want_carry=False)
+        return pre + [flags_fmt.format(a=ins.read(rn.reg), b=v) + ";"]
+    rd, rn, op = _three(ins)
+    pre, v, _ = ins.op2(op, want_carry=False)
+    fmt = flags_fmt if ins.s else plain_fmt
+    return pre + [f"{ins.dest(rd.reg)} = {fmt.format(a=ins.read(rn.reg), b=v)};"]
+
+
+SHIFT_ID = {arm.ARM_INS_LSL: "NJ_LSL", arm.ARM_INS_LSR: "NJ_LSR", arm.ARM_INS_ASR: "NJ_ASR",
+            arm.ARM_INS_ROR: "NJ_ROR"}
+
+
+def lift_shift(ins):
+    """lsl/lsr/asr/ror: `op rd, rm, #imm` arrives as mov rd, <shifted rm>; `op rd, rm, rs` as three registers."""
+    ops = ins.ci.operands
+    if len(ops) == 2:
+        return lift_mov(ins)
+    rd, rm, rs = ops
+    amount = f"({ins.read(rs.reg)} & 0xffu)"
+    kind = SHIFT_ID[ins.ci.id]
+    if not ins.s:
+        return [f"{ins.dest(rd.reg)} = nj_shift(c, {kind}, {ins.read(rm.reg)}, {amount});"]
+    return ["uint32_t cy = c->c;", f"uint32_t res = nj_shift_c({kind}, {ins.read(rm.reg)}, {amount}, &cy);",
+            f"{ins.dest(rd.reg)} = res;", "nj_logic_flags(c, res, cy);"]
+
+
+def lift_rrx(ins):
+    rd, rm = ins.ci.operands
+    out = ["uint32_t cy = c->c;", f"uint32_t res = nj_shift_c(NJ_RRX, {ins.read(rm.reg)}, 1, &cy);",
+           f"{ins.dest(rd.reg)} = res;"]
+    return out + (["nj_logic_flags(c, res, cy);"] if ins.s else [])
 
 
 def lift_add(ins):
-    rd, rn, op = _three(ins)
-    pre, v, _ = ins.op2(op, want_carry=False)
-    a = ins.read(rn.reg)
-    if ins.ci.update_flags:
-        return pre + [f"{ins.dest(rd.reg)} = nj_adds(c, {a}, {v});"]
-    return pre + [f"{ins.dest(rd.reg)} = {a} + {v};"]
+    return lift_arith(ins)
+
+
+def lift_movt(ins):
+    rd, imm = ins.ci.operands
+    d = ins.dest(rd.reg)
+    return [f"{d} = ({d} & 0xffffu) | {u32((imm.imm & 0xFFFF) << 16)};"]
+
+
+def _nz(ins, res):
+    return [f"c->n = {res} >> 31;", f"c->z = {res} == 0;"] if ins.s else []
+
+
+def lift_mul(ins):
+    ops = ins.ci.operands
+    rd, rn, rm = ops[0], ops[1], ops[2]
+    prod = f"{ins.read(rn.reg)} * {ins.read(rm.reg)}"
+    if ins.ci.id == arm.ARM_INS_MLA:
+        prod = f"{prod} + {ins.read(ops[3].reg)}"
+    elif ins.ci.id == arm.ARM_INS_MLS:
+        prod = f"{ins.read(ops[3].reg)} - {prod}"
+    return [f"uint32_t res = {prod};", f"{ins.dest(rd.reg)} = res;"] + _nz(ins, "res")
+
+
+def lift_mull(ins):
+    """umull/smull/umlal/smlal RdLo, RdHi, Rn, Rm."""
+    lo, hi, rn, rm = ins.ci.operands
+    signed = ins.ci.id in (arm.ARM_INS_SMULL, arm.ARM_INS_SMLAL)
+    t = "int64_t" if signed else "uint64_t"
+    cast = "(int32_t)" if signed else ""
+    out = [f"uint64_t res = (uint64_t)(({t}){cast}{ins.read(rn.reg)} * ({t}){cast}{ins.read(rm.reg)});"]
+    if ins.ci.id in (arm.ARM_INS_UMLAL, arm.ARM_INS_SMLAL):
+        out.append(f"res += (uint64_t){ins.read(hi.reg)} << 32 | {ins.read(lo.reg)};")
+    out += [f"{ins.dest(lo.reg)} = (uint32_t)res;", f"{ins.dest(hi.reg)} = (uint32_t)(res >> 32);"]
+    if ins.s:
+        out += ["c->n = (uint32_t)(res >> 63);", "c->z = res == 0;"]
+    return out
+
+
+HALF = {"bb": ("", ""), "bt": ("", " >> 16"), "tb": (" >> 16", ""), "tt": (" >> 16", " >> 16")}
+
+
+def lift_smulxy(ins):
+    """smulbb..smultt and smlabb..smlatt: 16x16 signed multiply (+ accumulate, setting Q on overflow)."""
+    name = ins.ci.insn_name()
+    xy = name[-2:]
+    ops = ins.ci.operands
+    a = f"(int16_t)({ins.read(ops[1].reg)}{HALF[xy][0]})"
+    b = f"(int16_t)({ins.read(ops[2].reg)}{HALF[xy][1]})"
+    if name.startswith("smul"):
+        return [f"{ins.dest(ops[0].reg)} = (uint32_t)((int32_t){a} * (int32_t){b});"]
+    return [f"int64_t res = (int64_t)((int32_t){a} * (int32_t){b}) + (int32_t){ins.read(ops[3].reg)};",
+            "if (res != (int32_t)res) c->q = 1;", f"{ins.dest(ops[0].reg)} = (uint32_t)res;"]
+
+
+def lift_clz(ins):
+    rd, rm = ins.ci.operands
+    return [f"uint32_t v = {ins.read(rm.reg)};", f"{ins.dest(rd.reg)} = v ? (uint32_t)__builtin_clz(v) : 32u;"]
+
+
+EXTEND = {arm.ARM_INS_UXTB: ("uint8_t", False), arm.ARM_INS_UXTH: ("uint16_t", False),
+          arm.ARM_INS_SXTB: ("int8_t", False), arm.ARM_INS_SXTH: ("int16_t", False),
+          arm.ARM_INS_UXTAB: ("uint8_t", True), arm.ARM_INS_UXTAH: ("uint16_t", True),
+          arm.ARM_INS_SXTAB: ("int8_t", True), arm.ARM_INS_SXTAH: ("int16_t", True)}
+
+
+def lift_extend(ins):
+    t, acc = EXTEND[ins.ci.id]
+    ops = ins.ci.operands
+    rm = ops[-1]
+    v = ins.read(rm.reg)
+    if rm.shift.type == arm.ARM_SFT_ROR and rm.shift.value:
+        r = rm.shift.value
+        v = f"(({v} >> {r}) | ({v} << {32 - r}))"
+    ext = f"(uint32_t)({t})({v})" if t.startswith("u") else f"(uint32_t)(int32_t)({t})({v})"
+    if acc:
+        ext = f"{ins.read(ops[1].reg)} + {ext}"
+    return [f"{ins.dest(ops[0].reg)} = {ext};"]
+
+
+def _field_mask(lsb, width):
+    return ((1 << width) - 1) << lsb
+
+
+def lift_bitfield(ins):
+    ops = ins.ci.operands
+    iid = ins.ci.id
+    if iid == arm.ARM_INS_BFC:
+        rd, lsb, width = ops
+        return [f"{ins.dest(rd.reg)} &= {u32(~_field_mask(lsb.imm, width.imm))};"]
+    rd, rn, lsb, width = ops
+    lsb, width = lsb.imm, width.imm
+    v = ins.read(rn.reg)
+    if iid == arm.ARM_INS_BFI:
+        m = _field_mask(lsb, width)
+        d = ins.dest(rd.reg)
+        return [f"{d} = ({d} & {u32(~m)}) | (({v} << {lsb}) & {u32(m)});"]
+    if iid == arm.ARM_INS_UBFX:
+        return [f"{ins.dest(rd.reg)} = ({v} >> {lsb}) & {u32((1 << width) - 1)};"]
+    # sbfx: move the field to the top, then arithmetic shift down
+    return [f"{ins.dest(rd.reg)} = (uint32_t)((int32_t)({v} << {32 - lsb - width}) >> {32 - width});"]
 
 
 HANDLERS = {
-    arm.ARM_INS_MOV: lift_mov,
-    arm.ARM_INS_ADD: lift_add,
+    arm.ARM_INS_MOV: lift_mov, arm.ARM_INS_MVN: lift_mov,
+    arm.ARM_INS_AND: lift_logic, arm.ARM_INS_ORR: lift_logic, arm.ARM_INS_EOR: lift_logic,
+    arm.ARM_INS_BIC: lift_logic, arm.ARM_INS_TST: lift_logic, arm.ARM_INS_TEQ: lift_logic,
+    arm.ARM_INS_ADD: lift_arith, arm.ARM_INS_SUB: lift_arith, arm.ARM_INS_RSB: lift_arith,
+    arm.ARM_INS_ADC: lift_arith, arm.ARM_INS_SBC: lift_arith, arm.ARM_INS_RSC: lift_arith,
+    arm.ARM_INS_CMP: lift_arith, arm.ARM_INS_CMN: lift_arith,
+    arm.ARM_INS_LSL: lift_shift, arm.ARM_INS_LSR: lift_shift, arm.ARM_INS_ASR: lift_shift,
+    arm.ARM_INS_ROR: lift_shift, arm.ARM_INS_RRX: lift_rrx,
+    arm.ARM_INS_MOVT: lift_movt,
+    arm.ARM_INS_MUL: lift_mul, arm.ARM_INS_MLA: lift_mul, arm.ARM_INS_MLS: lift_mul,
+    arm.ARM_INS_UMULL: lift_mull, arm.ARM_INS_SMULL: lift_mull, arm.ARM_INS_UMLAL: lift_mull,
+    arm.ARM_INS_SMLAL: lift_mull,
+    arm.ARM_INS_SMULBB: lift_smulxy, arm.ARM_INS_SMULBT: lift_smulxy, arm.ARM_INS_SMULTB: lift_smulxy,
+    arm.ARM_INS_SMULTT: lift_smulxy, arm.ARM_INS_SMLABB: lift_smulxy, arm.ARM_INS_SMLABT: lift_smulxy,
+    arm.ARM_INS_SMLATB: lift_smulxy, arm.ARM_INS_SMLATT: lift_smulxy,
+    arm.ARM_INS_CLZ: lift_clz,
+    arm.ARM_INS_UXTB: lift_extend, arm.ARM_INS_UXTH: lift_extend, arm.ARM_INS_SXTB: lift_extend,
+    arm.ARM_INS_SXTH: lift_extend, arm.ARM_INS_UXTAB: lift_extend, arm.ARM_INS_UXTAH: lift_extend,
+    arm.ARM_INS_SXTAB: lift_extend, arm.ARM_INS_SXTAH: lift_extend,
+    arm.ARM_INS_BFI: lift_bitfield, arm.ARM_INS_BFC: lift_bitfield, arm.ARM_INS_UBFX: lift_bitfield,
+    arm.ARM_INS_SBFX: lift_bitfield,
 }
 
 
