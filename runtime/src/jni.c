@@ -87,6 +87,9 @@ typedef struct {
     char *str;   /* K_STRING */
     uint32_t *elems, n; /* K_ARRAY */
     Field *fields;
+    uint32_t local_refs, global_refs;
+    uint8_t pinned;    /* classes and host-created objects outside native calls: never freed */
+    uint8_t contained; /* stored in an array or object field: never freed (no tracing collector) */
 } JObj;
 
 #define OBJ_BASE 0x10000000u
@@ -95,35 +98,128 @@ typedef struct {
 #define MAX_OBJS 262144u
 
 static JObj *objs[MAX_OBJS];
-static uint32_t nobjs = 1;
-static pthread_mutex_t jlock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t nobjs = 1; /* high-water mark of used indices */
+static uint32_t free_idx[MAX_OBJS], nfree;
+static uint32_t live; /* non-class objects alive */
+static pthread_mutex_t jlock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 
-static uint32_t new_obj(Kind k, const char *cls) {
+/* Per-thread local references; frames mark where each native call's locals start. */
+typedef struct {
+    uint32_t *h;
+    uint32_t n, cap;
+    uint32_t frames[64];
+    int depth;
+} Locals;
+static _Thread_local Locals locals;
+
+static void locals_add(uint32_t h) {
+    if (locals.n == locals.cap && locals.depth == 0) { /* outside native calls: drop deleted slots first */
+        uint32_t k = 0;
+        for (uint32_t i = 0; i < locals.n; i++) if (locals.h[i]) locals.h[k++] = locals.h[i];
+        locals.n = k;
+    }
+    if (locals.n == locals.cap) {
+        locals.cap = locals.cap ? locals.cap * 2 : 256;
+        locals.h = realloc(locals.h, locals.cap * sizeof *locals.h);
+    }
+    locals.h[locals.n++] = h;
+}
+
+static uint32_t idx_of(uint32_t h) {
+    if (h < OBJ_BASE + 4 || h >= OBJ_BASE + 4 * MAX_OBJS || (h & 3)) return 0;
+    return (h - OBJ_BASE) / 4;
+}
+
+/* local != 0: the new object holds one local reference of the calling thread; otherwise it is pinned. */
+static uint32_t new_obj(Kind k, const char *cls, int local) {
     JObj *o = calloc(1, sizeof *o);
     o->kind = k;
     o->cls = strdup(cls);
+    if (local && k != K_CLASS) o->local_refs = 1;
+    else o->pinned = 1;
     pthread_mutex_lock(&jlock);
-    if (nobjs == MAX_OBJS) { pthread_mutex_unlock(&jlock); nj_fatal("JNI object table full"); }
-    uint32_t idx = nobjs++;
+    uint32_t idx;
+    if (nfree) idx = free_idx[--nfree];
+    else if (nobjs < MAX_OBJS) idx = nobjs++;
+    else { pthread_mutex_unlock(&jlock); nj_fatal("JNI object table full (%u live)", live); }
     objs[idx] = o;
+    if (k != K_CLASS) live++;
     pthread_mutex_unlock(&jlock);
-    return OBJ_BASE + 4 * idx;
+    uint32_t h = OBJ_BASE + 4 * idx;
+    if (o->local_refs) locals_add(h);
+    return h;
 }
 
 static JObj *obj(uint32_t h) {
-    if (h < OBJ_BASE + 4 || h >= OBJ_BASE + 4 * MAX_OBJS || (h & 3)) return NULL;
-    uint32_t idx = (h - OBJ_BASE) / 4;
+    uint32_t idx = idx_of(h);
     pthread_mutex_lock(&jlock);
-    JObj *o = idx < nobjs ? objs[idx] : NULL;
+    JObj *o = idx && idx < nobjs ? objs[idx] : NULL;
     pthread_mutex_unlock(&jlock);
     return o;
 }
 
 static JObj *obj_or_fatal(uint32_t h, const char *what) {
     JObj *o = obj(h);
-    if (!o) nj_fatal("JNI %s: invalid object handle 0x%08x", what, h);
+    if (!o) nj_fatal("JNI %s: invalid or freed object handle 0x%08x", what, h);
     return o;
 }
+
+/* Caller holds jlock. */
+static void maybe_free(uint32_t idx) {
+    JObj *o = objs[idx];
+    if (!o || o->pinned || o->contained || o->local_refs || o->global_refs) return;
+    for (Field *f = o->fields; f;) { Field *n = f->next; free(f->name); free(f->sig); free(f); f = n; }
+    free(o->cls);
+    free(o->str);
+    free(o->elems);
+    free(o);
+    objs[idx] = NULL;
+    free_idx[nfree++] = idx;
+    live--;
+}
+
+static void release_local(uint32_t h) {
+    uint32_t idx = idx_of(h);
+    pthread_mutex_lock(&jlock);
+    JObj *o = idx && idx < nobjs ? objs[idx] : NULL;
+    if (o && o->local_refs) { o->local_refs--; maybe_free(idx); }
+    pthread_mutex_unlock(&jlock);
+}
+
+static void mark_contained(uint32_t h) {
+    JObj *o = obj(h);
+    if (o) o->contained = 1;
+}
+
+void nj_jni_push_frame(void) {
+    if (locals.depth == 64) nj_fatal("JNI local frames nested too deeply");
+    locals.frames[locals.depth++] = locals.n;
+}
+
+static _Thread_local uint32_t pending;
+
+void nj_jni_pop_frame(void) {
+    if (!locals.depth) return;
+    uint32_t start = locals.frames[--locals.depth];
+    for (uint32_t i = start; i < locals.n; i++) if (locals.h[i]) release_local(locals.h[i]);
+    locals.n = start;
+    if (!locals.depth) pending = 0; /* an exception does not outlive the native call that raised it */
+}
+
+uint32_t nj_jni_live_objects(void) {
+    pthread_mutex_lock(&jlock);
+    uint32_t n = live;
+    pthread_mutex_unlock(&jlock);
+    return n;
+}
+
+void nj_jni_pin(uint32_t h) {
+    JObj *o = obj(h);
+    if (o) o->pinned = 1;
+}
+
+/* Host-created objects are locals inside a native call (Java return values) and pinned otherwise. */
+static int host_local(void) { return locals.depth > 0; }
 
 /* classes: interned; "declared" ones are visible to FindClass */
 #define MAX_CLASSES 256
@@ -131,50 +227,61 @@ static struct { char *name; uint32_t h; int declared; } classes[MAX_CLASSES];
 static int nclasses;
 
 static uint32_t class_handle(const char *name, int declare, int create) {
-    for (int i = 0; i < nclasses; i++)
+    pthread_mutex_lock(&jlock);
+    uint32_t h = 0;
+    int i = 0;
+    for (; i < nclasses; i++)
         if (strcmp(classes[i].name, name) == 0) {
             if (declare) classes[i].declared = 1;
-            return (classes[i].declared || create) ? classes[i].h : 0;
+            h = (classes[i].declared || create) ? classes[i].h : 0;
+            break;
         }
-    if (!create && !declare) return 0;
-    if (nclasses == MAX_CLASSES) nj_fatal("JNI class table full");
-    uint32_t h = new_obj(K_CLASS, name);
-    classes[nclasses].name = strdup(name);
-    classes[nclasses].h = h;
-    classes[nclasses].declared = declare;
-    nclasses++;
+    if (i == nclasses && (create || declare)) {
+        if (nclasses == MAX_CLASSES) { pthread_mutex_unlock(&jlock); nj_fatal("JNI class table full"); }
+        h = new_obj(K_CLASS, name, 0);
+        classes[nclasses].name = strdup(name);
+        classes[nclasses].h = h;
+        classes[nclasses].declared = declare;
+        nclasses++;
+    }
+    pthread_mutex_unlock(&jlock);
     return h;
 }
 
 uint32_t nj_jni_class(const char *name) { return class_handle(name, 1, 1); }
 void nj_jni_declare_class(const char *name) { class_handle(name, 1, 1); }
-uint32_t nj_jni_object(const char *name) { nj_jni_declare_class(name); return new_obj(K_OBJECT, name); }
+uint32_t nj_jni_object(const char *name) { nj_jni_declare_class(name); return new_obj(K_OBJECT, name, host_local()); }
 
-uint32_t nj_jni_new_string(const char *utf8) {
-    uint32_t h = new_obj(K_STRING, "java/lang/String");
+static uint32_t new_string(const char *utf8, int local) {
+    uint32_t h = new_obj(K_STRING, "java/lang/String", local);
     obj(h)->str = strdup(utf8 ? utf8 : "");
     return h;
 }
+
+uint32_t nj_jni_new_string(const char *utf8) { return new_string(utf8, host_local()); }
 
 const char *nj_jni_string_chars(uint32_t s) {
     JObj *o = obj(s);
     return o && o->kind == K_STRING ? o->str : NULL;
 }
 
-uint32_t nj_jni_new_object_array(const char *elem_class, uint32_t n) {
+static uint32_t new_object_array(const char *elem_class, uint32_t n, int local) {
     char name[300];
     snprintf(name, sizeof name, "[L%s;", elem_class);
-    uint32_t h = new_obj(K_ARRAY, name);
+    uint32_t h = new_obj(K_ARRAY, name, local);
     JObj *o = obj(h);
     o->elems = calloc(n ? n : 1, 4);
     o->n = n;
     return h;
 }
 
+uint32_t nj_jni_new_object_array(const char *elem_class, uint32_t n) { return new_object_array(elem_class, n, host_local()); }
+
 void nj_jni_array_set(uint32_t array, uint32_t index, uint32_t value) {
     JObj *o = obj_or_fatal(array, "array set");
     if (o->kind != K_ARRAY || index >= o->n) nj_fatal("JNI array index %u out of range", index);
     o->elems[index] = value;
+    if (value) mark_contained(value);
 }
 
 /* field descriptors (per class) give jfieldIDs; values live on the objects */
@@ -183,24 +290,33 @@ static struct { char *cls, *name, *sig; } fdesc[MAX_FIELDS];
 static uint32_t nfdesc;
 
 static uint32_t field_id(const char *cls, const char *name, const char *sig, int create) {
-    for (uint32_t i = 0; i < nfdesc; i++)
+    pthread_mutex_lock(&jlock);
+    uint32_t id = 0;
+    for (uint32_t i = 0; i < nfdesc && !id; i++)
         if (!strcmp(fdesc[i].cls, cls) && !strcmp(fdesc[i].name, name) && !strcmp(fdesc[i].sig, sig))
-            return FID_BASE + 4 * i;
-    if (!create) return 0;
-    if (nfdesc == MAX_FIELDS) nj_fatal("JNI field table full");
-    fdesc[nfdesc].cls = strdup(cls);
-    fdesc[nfdesc].name = strdup(name);
-    fdesc[nfdesc].sig = strdup(sig);
-    return FID_BASE + 4 * nfdesc++;
+            id = FID_BASE + 4 * i;
+    if (!id && create) {
+        if (nfdesc == MAX_FIELDS) { pthread_mutex_unlock(&jlock); nj_fatal("JNI field table full"); }
+        fdesc[nfdesc].cls = strdup(cls);
+        fdesc[nfdesc].name = strdup(name);
+        fdesc[nfdesc].sig = strdup(sig);
+        id = FID_BASE + 4 * nfdesc++;
+    }
+    pthread_mutex_unlock(&jlock);
+    return id;
 }
 
 static Field *field_on(JObj *o, const char *name, int create) {
-    for (Field *f = o->fields; f; f = f->next) if (!strcmp(f->name, name)) return f;
-    if (!create) return NULL;
-    Field *f = calloc(1, sizeof *f);
-    f->name = strdup(name);
-    f->next = o->fields;
-    o->fields = f;
+    pthread_mutex_lock(&jlock);
+    Field *f = o->fields;
+    while (f && strcmp(f->name, name)) f = f->next;
+    if (!f && create) {
+        f = calloc(1, sizeof *f);
+        f->name = strdup(name);
+        f->next = o->fields;
+        o->fields = f;
+    }
+    pthread_mutex_unlock(&jlock);
     return f;
 }
 
@@ -211,6 +327,7 @@ void nj_jni_set_field(uint32_t h, const char *name, const char *sig, uint64_t va
     free(f->sig);
     f->sig = strdup(sig);
     f->value = value;
+    if ((sig[0] == 'L' || sig[0] == '[') && value) mark_contained((uint32_t)value);
 }
 
 /* ---- emulated methods ---- */
@@ -221,17 +338,20 @@ static uint32_t nmethods;
 
 void nj_java_register(const char *cls, const char *name, const char *sig, NjJavaFn fn) {
     nj_jni_declare_class(cls);
+    pthread_mutex_lock(&jlock);
     for (uint32_t i = 0; i < nmethods; i++)
         if (!strcmp(methods[i].cls, cls) && !strcmp(methods[i].name, name) && !strcmp(methods[i].sig, sig)) {
             methods[i].fn = fn;
+            pthread_mutex_unlock(&jlock);
             return;
         }
-    if (nmethods == MAX_METHODS) nj_fatal("JNI method table full");
+    if (nmethods == MAX_METHODS) { pthread_mutex_unlock(&jlock); nj_fatal("JNI method table full"); }
     methods[nmethods].cls = strdup(cls);
     methods[nmethods].name = strdup(name);
     methods[nmethods].sig = strdup(sig);
     methods[nmethods].fn = fn;
     nmethods++;
+    pthread_mutex_unlock(&jlock);
 }
 
 static uint32_t method_id(const char *cls, const char *name, const char *sig) {
@@ -244,8 +364,6 @@ static uint32_t method_id(const char *cls, const char *name, const char *sig) {
 }
 
 /* ---- exceptions ---- */
-
-static _Thread_local uint32_t pending;
 
 void nj_jni_throw(const char *exc_class) { pending = nj_jni_object(exc_class); }
 
@@ -300,14 +418,40 @@ static void j_ExceptionCheck(NjCtx *c) { hle_ret(c, pending ? 1 : 0); }
 static void j_FatalError(NjCtx *c) { nj_fatal("JNI FatalError: %s", hle_cstr(A(1)) ? hle_cstr(A(1)) : ""); }
 static void j_PushLocalFrame(NjCtx *c) { hle_ret(c, 0); }
 static void j_PopLocalFrame(NjCtx *c) { hle_ret(c, A(1)); }
-static void j_RefSame(NjCtx *c) { hle_ret(c, A(1)); } /* NewGlobalRef, NewLocalRef, NewWeakGlobalRef */
-static void j_RefNoop(NjCtx *c) { (void)c; }      /* DeleteGlobalRef, DeleteLocalRef, DeleteWeakGlobalRef */
+static void j_NewGlobalRef(NjCtx *c) { /* also NewWeakGlobalRef: weak references keep objects alive */
+    JObj *o = obj(A(1));
+    if (o) { pthread_mutex_lock(&jlock); o->global_refs++; pthread_mutex_unlock(&jlock); }
+    hle_ret(c, o ? A(1) : 0);
+}
+static void j_DeleteGlobalRef(NjCtx *c) {
+    uint32_t idx = idx_of(A(1));
+    pthread_mutex_lock(&jlock);
+    JObj *o = idx && idx < nobjs ? objs[idx] : NULL;
+    if (o && o->global_refs) { o->global_refs--; maybe_free(idx); }
+    pthread_mutex_unlock(&jlock);
+}
+static void j_NewLocalRef(NjCtx *c) {
+    JObj *o = obj(A(1));
+    if (o && !o->pinned) {
+        pthread_mutex_lock(&jlock);
+        o->local_refs++;
+        pthread_mutex_unlock(&jlock);
+        locals_add(A(1));
+    }
+    hle_ret(c, o ? A(1) : 0);
+}
+/* Deleting a reference that is not one of this thread's locals (e.g. an array element) is a no-op. */
+static void j_DeleteLocalRef(NjCtx *c) {
+    uint32_t h = A(1);
+    for (uint32_t i = locals.n; i-- > 0;)
+        if (locals.h[i] == h) { locals.h[i] = 0; release_local(h); return; }
+}
 static void j_IsSameObject(NjCtx *c) { hle_ret(c, A(1) == A(2)); }
 static void j_EnsureLocalCapacity(NjCtx *c) { hle_ret(c, 0); }
 
 static void j_AllocObject(NjCtx *c) {
     JObj *k = obj_or_fatal(A(1), "AllocObject");
-    hle_ret(c, new_obj(K_OBJECT, k->cls));
+    hle_ret(c, new_obj(K_OBJECT, k->cls, 1));
 }
 
 static void j_GetObjectClass(NjCtx *c) {
@@ -348,7 +492,12 @@ static Field *field_for(uint32_t h, uint32_t fid, const char *what) {
 
 static void j_GetField32(NjCtx *c) { hle_ret(c, (uint32_t)field_for(A(1), A(2), "Get<T>Field")->value); }
 static void j_GetField64(NjCtx *c) { hle_ret64(c, field_for(A(1), A(2), "Get<T>Field")->value); }
-static void j_SetField32(NjCtx *c) { field_for(A(1), A(2), "Set<T>Field")->value = A(3); }
+static void j_SetField32(NjCtx *c) {
+    Field *f = field_for(A(1), A(2), "Set<T>Field");
+    f->value = A(3);
+    uint32_t i = (A(2) - FID_BASE) / 4;
+    if ((fdesc[i].sig[0] == 'L' || fdesc[i].sig[0] == '[') && A(3)) mark_contained(A(3));
+}
 static void j_SetField64(NjCtx *c) { field_for(A(1), A(2), "Set<T>Field")->value = hle_arg64(c, 4); }
 
 /* Call<Type>Method / CallNonvirtual / CallStatic, variants: 0 = varargs, 1 = va_list, 2 = jvalue[] */
@@ -414,7 +563,7 @@ CALL_VARIANTS(Float, 'F')
 CALL_VARIANTS(Double, 'D')
 CALL_VARIANTS(Void, 'V')
 
-static void j_NewStringUTF(NjCtx *c) { hle_ret(c, A(1) ? nj_jni_new_string(hle_cstr(A(1))) : 0); }
+static void j_NewStringUTF(NjCtx *c) { hle_ret(c, A(1) ? new_string(hle_cstr(A(1)), 1) : 0); }
 
 static JObj *string_or_fatal(uint32_t h, const char *what) {
     JObj *o = obj_or_fatal(h, what);
@@ -453,9 +602,10 @@ static void j_GetArrayLength(NjCtx *c) { hle_ret(c, array_or_fatal(A(1), "GetArr
 
 static void j_NewObjectArray(NjCtx *c) {
     JObj *k = obj_or_fatal(A(2), "NewObjectArray");
-    uint32_t a = nj_jni_new_object_array(k->cls, A(1));
+    uint32_t a = new_object_array(k->cls, A(1), 1);
     JObj *o = obj(a);
     for (uint32_t i = 0; i < o->n; i++) o->elems[i] = A(3);
+    if (A(3)) mark_contained(A(3));
     hle_ret(c, a);
 }
 
@@ -500,8 +650,10 @@ static NjHleFn impl_for(const char *name) {
     CALLS(Double) CALLS(Void)
 #undef CALLS
 #undef IMPL
-    if (!strcmp(name, "NewGlobalRef") || !strcmp(name, "NewLocalRef") || !strcmp(name, "NewWeakGlobalRef")) return j_RefSame;
-    if (!strcmp(name, "DeleteGlobalRef") || !strcmp(name, "DeleteLocalRef") || !strcmp(name, "DeleteWeakGlobalRef")) return j_RefNoop;
+    if (!strcmp(name, "NewGlobalRef") || !strcmp(name, "NewWeakGlobalRef")) return j_NewGlobalRef;
+    if (!strcmp(name, "DeleteGlobalRef") || !strcmp(name, "DeleteWeakGlobalRef")) return j_DeleteGlobalRef;
+    if (!strcmp(name, "NewLocalRef")) return j_NewLocalRef;
+    if (!strcmp(name, "DeleteLocalRef")) return j_DeleteLocalRef;
     if (!strcmp(name, "MonitorEnter") || !strcmp(name, "MonitorExit")) return j_Monitor;
     if (!strcmp(name, "GetMethodID") || !strcmp(name, "GetStaticMethodID")) return get_method;
     if (!strcmp(name, "GetFieldID") || !strcmp(name, "GetStaticFieldID")) return get_field;
@@ -587,8 +739,11 @@ static uint64_t call_addr_v(uint32_t fn, uint32_t thiz, const char *desc, va_lis
         }
     }
     NjCtx *c = nj_ctx();
+    nj_jni_push_frame();
     uint32_t r0 = nj_call(c, fn, n, w);
-    return (ret == 'J' || ret == 'D') ? ((uint64_t)r0 | (uint64_t)c->r[1] << 32) : r0;
+    uint32_t r1 = c->r[1];
+    nj_jni_pop_frame();
+    return (ret == 'J' || ret == 'D') ? ((uint64_t)r0 | (uint64_t)r1 << 32) : r0;
 }
 
 uint64_t nj_jni_call_addr(uint32_t fn, uint32_t thiz, const char *desc, ...) {

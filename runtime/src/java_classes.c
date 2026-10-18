@@ -59,7 +59,10 @@ static uint32_t loader;
 
 static uint64_t j_getClassLoader(uint32_t self, const NjJValue *a, int n) {
     (void)self; (void)a; (void)n;
-    if (!loader) loader = nj_jni_object("java/lang/ClassLoader");
+    if (!loader) {
+        loader = nj_jni_object("java/lang/ClassLoader");
+        nj_jni_pin(loader);
+    }
     return loader;
 }
 

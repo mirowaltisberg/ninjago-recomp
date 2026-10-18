@@ -9,6 +9,7 @@
 #include "nj/audio.h"
 #include "nj/fs.h"
 #include "nj/gles.h"
+#include "nj/jni.h"
 
 void nj_headless_set_size(int w, int h);
 
@@ -65,6 +66,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "== %d frames in %.2f s\n", frames, (t0.tv_sec - t1.tv_sec) + (t0.tv_nsec - t1.tv_nsec) / 1e9);
     fprintf(stderr, "== audio: %llu frames mixed, last block peak %.4f, max peak %.4f\n",
             (unsigned long long)nj_audio_null_frames(), (double)nj_audio_null_peak(), (double)nj_audio_null_max_peak());
+    fprintf(stderr, "== jni: %u live objects\n", nj_jni_live_objects());
     gles_stub_report(stdout);
     nj_fs_report(stdout);
     return 0;

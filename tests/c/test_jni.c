@@ -239,3 +239,35 @@ NJ_TEST(jni_call_native_marshal) {
     /* "(IJ)V": the long skips r3 and lands in the 8-aligned stack slot */
     NJ_EQ_U((uint32_t)nj_jni_call_addr(FN_RET_SP0, thiz, "(IJ)V", 5, 0x1122334455667788ll), 0x55667788u);
 }
+
+enum { S_DeleteLocalRef = 23, S_NewGlobalRef = 21, S_DeleteGlobalRef = 22 };
+
+NJ_TEST(jni_local_refs_are_reclaimed) {
+    setup();
+    uint32_t base = nj_jni_live_objects();
+    uint32_t s = gs("x");
+    for (int i = 0; i < 300000; i++) { /* more than the table holds: must not hit "table full" */
+        uint32_t w1[] = {env(), s};
+        uint32_t h = jcall(S_NewStringUTF, w1, 2)->r[0];
+        uint32_t w2[] = {env(), h};
+        jcall(S_DeleteLocalRef, w2, 2);
+    }
+    NJ_EQ_U(nj_jni_live_objects(), base);
+}
+
+NJ_TEST(jni_frame_releases_locals_keeps_globals) {
+    setup();
+    uint32_t base = nj_jni_live_objects();
+    nj_jni_push_frame();
+    uint32_t w1[] = {env(), gs("a")};
+    jcall(S_NewStringUTF, w1, 2);
+    uint32_t keep = jcall(S_NewStringUTF, w1, 2)->r[0];
+    uint32_t w2[] = {env(), keep};
+    uint32_t g = jcall(S_NewGlobalRef, w2, 2)->r[0];
+    nj_jni_pop_frame();
+    NJ_EQ_U(nj_jni_live_objects(), base + 1); /* only the globally referenced string survives */
+    NJ_EQ_STR(nj_jni_string_chars(g), "a");
+    uint32_t w3[] = {env(), g};
+    jcall(S_DeleteGlobalRef, w3, 2);
+    NJ_EQ_U(nj_jni_live_objects(), base);
+}

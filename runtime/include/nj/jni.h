@@ -30,6 +30,15 @@ void nj_jni_throw(const char *exc_class);
 /* Mark a class as known to FindClass/loadClass. */
 void nj_jni_declare_class(const char *class_name);
 
+/* Local reference frames: objects created by the guest (or by emulated Java methods) while a frame is
+ * open are freed when it is popped unless globally referenced. nj_jni_call_* push/pop automatically. */
+void nj_jni_push_frame(void);
+void nj_jni_pop_frame(void);
+/* Keep an object alive forever (cached singletons returned to the guest). */
+void nj_jni_pin(uint32_t handle);
+/* Number of live (non-class) objects, for diagnostics and tests. */
+uint32_t nj_jni_live_objects(void);
+
 /* Emulated Java methods. */
 typedef union { uint32_t i; float f; double d; uint64_t j; uint32_t l; } NjJValue;
 typedef uint64_t (*NjJavaFn)(uint32_t self, const NjJValue *args, int argc);
