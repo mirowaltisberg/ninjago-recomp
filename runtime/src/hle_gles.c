@@ -14,6 +14,13 @@
 
 #include "nj/gles.h"
 #include "nj/hle.h"
+#include "nj/texture.h"
+
+#if TARGET_OS_IPHONE
+bool nj_gles_decode_atc = true;
+#else
+bool nj_gles_decode_atc = false;
+#endif
 
 #define U(i) hle_arg(c, i)
 #define S(i) ((GLint)hle_arg(c, i))
@@ -39,7 +46,6 @@ THUNK(glClearColor, F(0), F(1), F(2), F(3))
 THUNK(glClearDepthf, F(0))
 THUNK(glClearStencil, S(0))
 THUNK(glCompileShader, U(0))
-THUNK(glCompressedTexImage2D, U(0), S(1), U(2), S(3), S(4), S(5), S(6), P(7))
 RET(glCreateProgram)
 RET(glCreateShader, U(0))
 THUNK(glDeleteBuffers, S(0), P(1))
@@ -95,6 +101,22 @@ THUNK(glViewport, S(0), S(1), S(2), S(3))
 THUNK(glGenVertexArraysOES, S(0), P(1))
 THUNK(glBindVertexArrayOES, U(0))
 THUNK(glDeleteVertexArraysOES, S(0), P(1))
+
+/* iOS GPUs have no ATC: decode those uploads to RGBA8. */
+static void h_glCompressedTexImage2D(NjCtx *c) {
+    GLenum fmt = U(2);
+    GLsizei w = S(3), h = S(4);
+    if (nj_gles_decode_atc && nj_atc_format(fmt) && w > 0 && h > 0) {
+        size_t need = nj_atc_size(fmt, w, h);
+        if ((size_t)S(6) < need) nj_fatal("ATC upload %dx%d: %d bytes, need %zu", w, h, S(6), need);
+        uint8_t *rgba = malloc((size_t)w * (size_t)h * 4);
+        nj_atc_decode(fmt, w, h, P(7), rgba);
+        glTexImage2D(U(0), S(1), GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        free(rgba);
+        return;
+    }
+    glCompressedTexImage2D(U(0), S(1), fmt, w, h, S(5), S(6), P(7));
+}
 
 /* Last argument is a buffer offset when a buffer is bound, otherwise a client-memory pointer. */
 static const void *offset_or_pointer(NjCtx *c, int word, GLenum binding) {

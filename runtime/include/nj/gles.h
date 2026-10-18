@@ -2,6 +2,7 @@
 #ifndef NJ_GLES_H
 #define NJ_GLES_H
 
+#include <stdbool.h>
 #include <stdio.h>
 
 /* All GL imports + OES vertex array functions (reachable through eglGetProcAddress). */
@@ -15,6 +16,9 @@ void nj_egl_set_current_main(void);
 /* Guest EGLConfig handle (also stored in the EGLConfig Java object's mEGLConfig field). */
 unsigned nj_egl_config_handle(void);
 
+/* Decode ATC textures to RGBA8 before upload (true on iOS, whose GPUs lack ATC). */
+extern bool nj_gles_decode_atc;
+
 /* Headless stub (runtime/headless/gles_stub.c) diagnostics. */
 void gles_stub_frame(void);           /* call once per presented frame */
 void gles_stub_report(FILE *out);
@@ -24,5 +28,6 @@ const char *gles_stub_last_shader_source(void);
 const void *gles_stub_last_attrib_pointer(void);
 const void *gles_stub_last_draw_indices(void);
 unsigned gles_stub_compressed_format_count(unsigned internalformat);
+unsigned gles_stub_teximage_count(unsigned format, unsigned type);
 
 #endif

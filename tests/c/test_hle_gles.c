@@ -148,3 +148,16 @@ NJ_TEST(egl_get_proc_address) {
     uint32_t w2[] = {hle_guest_strdup("glProgramBinaryOES")};
     NJ_EQ_U(call("eglGetProcAddress", w2, 1), 0);
 }
+
+NJ_TEST(gl_atc_decoded_to_rgba) {
+    setup();
+    nj_gles_decode_atc = true;
+    uint32_t data = nj_calloc(1, 8); /* one 4x4 ATC_RGB block */
+    unsigned before_c = gles_stub_compressed_format_count(0x8C92);
+    unsigned before_t = gles_stub_teximage_count(0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */);
+    uint32_t w[] = {0x0DE1, 0, 0x8C92, 4, 4, 0, 8, data};
+    call("glCompressedTexImage2D", w, 8);
+    nj_gles_decode_atc = false;
+    NJ_EQ_U(gles_stub_compressed_format_count(0x8C92), before_c);
+    NJ_EQ_U(gles_stub_teximage_count(0x1908, 0x1401), before_t + 1);
+}

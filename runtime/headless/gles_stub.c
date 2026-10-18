@@ -58,6 +58,12 @@ unsigned gles_stub_compressed_format_count(unsigned f) {
     return 0;
 }
 
+unsigned gles_stub_teximage_count(unsigned format, unsigned type) {
+    unsigned key = format << 16 | (type & 0xffff);
+    for (int i = 0; i < ntfmt; i++) if (tfmt[i].key == key) return tfmt[i].n;
+    return 0;
+}
+
 static const char *format_name(unsigned f) {
     switch (f) {
     case 0x8D64: return "ETC1_RGB8_OES";
