@@ -17,7 +17,9 @@ Probe app: `probe/ios-vaprobe/` (xcodegen; two targets, `VAProbe` without and `V
 |---|---|---|---|---|---|---|---|---|
 | Simulator (iPhone 17, iOS 27.1), plain | ok | ok | ok | ok | ok | ok | ok | ok |
 | Simulator, EVA | ok | ok | ok | ok | ok | ok | ok | ok |
-| iPhone 17 (iOS 27.0.1), plain | pending (device unavailable) | | | | | | | |
-| iPhone 17, EVA | pending | | | | | | | |
+| iPhone 17 (iOS 27.0.1), plain | ok (at 0x7000000000) | ok | ok | ok | ok | ok | ok | ok (3370 → 2858 MiB available) |
+| iPhone 17, EVA | ok (at 0x7000000000) | ok | ok | ok | ok | ok | ok | ok (3370 → 2858 MiB available) |
 
-The memory-map constants stay as they are unless a device run fails.
+Device runs 2026-10-19 via `xcrun devicectl device process launch --console`. The 4 GiB reservation works on
+the iPhone 17 even without the extended-virtual-addressing entitlement; the memory-map constants stay as they
+are. The game app may still carry the entitlement for headroom.
