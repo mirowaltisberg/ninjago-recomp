@@ -413,6 +413,197 @@ def lift_mem(ins):
     ins.unsupported("memory encoding")
 
 
+# ---- VFP ----
+
+def _vreg(ins, op):
+    """('s'|'d', number) of a VFP register operand."""
+    name = ins.ci.reg_name(op.reg)
+    if name[0] not in "sd" or not name[1:].isdigit():
+        ins.unsupported("vfp register")
+    return name[0], int(name[1:])
+
+
+def _vget(kind, n):
+    return f"nj_sf(c, {n})" if kind == "s" else f"nj_df(c, {n})"
+
+
+def _vset(kind, n, expr):
+    return f"nj_set_sf(c, {n}, {expr});" if kind == "s" else f"nj_set_df(c, {n}, {expr});"
+
+
+def _vbits_get(kind, n):
+    return f"nj_get_s(c, {n})" if kind == "s" else f"c->d[{n}]"
+
+
+def _vbits_set(kind, n, expr):
+    return f"nj_set_s(c, {n}, {expr});" if kind == "s" else f"c->d[{n}] = {expr};"
+
+
+def lift_vldst(ins):
+    """vldr/vstr: [Rn, #+/-imm8*4]; PC reads as this instruction + 8."""
+    w = ins.word
+    kind, v = _vreg(ins, ins.ci.operands[0])
+    n = w >> 16 & 15
+    off = (w & 0xFF) * 4
+    addr = f"{_reg(ins, n)} {'+' if w >> 23 & 1 else '-'} {u32(off)}"
+    load = w >> 20 & 1
+    if kind == "s":
+        return [f"nj_set_s(c, {v}, nj_r32({addr}));"] if load else [f"nj_w32({addr}, nj_get_s(c, {v}));"]
+    return [f"c->d[{v}] = nj_r64({addr});"] if load else [f"nj_w64({addr}, c->d[{v}]);"]
+
+
+def lift_vblock(ins):
+    """vldm/vstm (ia with optional write-back, db with write-back) and vpush/vpop."""
+    w = ins.word
+    p, up, wb, load = w >> 24 & 1, w >> 23 & 1, w >> 21 & 1, w >> 20 & 1
+    n = w >> 16 & 15
+    imm8 = w & 0xFF
+    double = w >> 8 & 1
+    if double and imm8 & 1:
+        ins.unsupported("fldmx/fstmx")
+    ops = [op for op in ins.ci.operands if ins.ci.reg_name(op.reg)[0] in "sd" and ins.ci.reg_name(op.reg)[1:].isdigit()]
+    regs = [_vreg(ins, op) for op in ops]
+    start = 0 if (p, up) == (0, 1) else -4 * imm8
+    if (p, up) not in ((0, 1), (1, 0)) or n == 15:
+        ins.unsupported("vldm/vstm mode")
+    out = [f"uint32_t base = c->r[{n}];"]
+    off = start
+    for kind, r in regs:
+        a = f"base + {u32(off)}"
+        if kind == "s":
+            out.append(f"nj_set_s(c, {r}, nj_r32({a}));" if load else f"nj_w32({a}, nj_get_s(c, {r}));")
+            off += 4
+        else:
+            out.append(f"c->d[{r}] = nj_r64({a});" if load else f"nj_w64({a}, c->d[{r}]);")
+            off += 8
+    if wb:
+        out.append(f"c->r[{n}] = base {'+' if up else '-'} {4 * imm8}u;")
+    return out
+
+
+def lift_vmov(ins):
+    ops = ins.ci.operands
+    names = [ins.ci.reg_name(op.reg) if op.type == arm.ARM_OP_REG else None for op in ops]
+    is_v = [nm is not None and nm[0] in "sd" and nm[1:].isdigit() for nm in names]
+    if len(ops) == 2 and is_v[0] and is_v[1]:  # vmov.f32 s, s / vmov.f64 d, d
+        (k, d), (_, m) = _vreg(ins, ops[0]), _vreg(ins, ops[1])
+        return [_vbits_set(k, d, _vbits_get(k, m))]
+    if len(ops) == 2 and is_v[0]:  # vmov s, r
+        k, d = _vreg(ins, ops[0])
+        return [f"nj_set_s(c, {d}, {ins.read(ops[1].reg)});"]
+    if len(ops) == 2 and is_v[1]:  # vmov r, s
+        k, m = _vreg(ins, ops[1])
+        return [f"{ins.dest(ops[0].reg)} = nj_get_s(c, {m});"]
+    if len(ops) == 3 and is_v[0]:  # vmov d, rlo, rhi
+        k, d = _vreg(ins, ops[0])
+        return [f"c->d[{d}] = (uint64_t){ins.read(ops[2].reg)} << 32 | {ins.read(ops[1].reg)};"]
+    if len(ops) == 3 and is_v[2]:  # vmov rlo, rhi, d
+        k, m = _vreg(ins, ops[2])
+        return [f"uint64_t v = c->d[{m}];", f"{ins.dest(ops[0].reg)} = (uint32_t)v;",
+                f"{ins.dest(ops[1].reg)} = (uint32_t)(v >> 32);"]
+    ins.unsupported("vmov form")
+
+
+def lift_fconst(ins):
+    """vmov.f32/.f64 #imm: VFPExpandImm of imm8 (decoded from the encoding, exact)."""
+    w = ins.word
+    imm8 = (w >> 12 & 0xF0) | (w & 0xF)
+    sign, b6, top2, frac = imm8 >> 7, imm8 >> 6 & 1, imm8 >> 4 & 3, imm8 & 15
+    kind, d = _vreg(ins, ins.ci.operands[0])
+    if kind == "s":
+        exp = ((b6 ^ 1) << 7) | ((0x1F if b6 else 0) << 2) | top2
+        return [f"nj_set_s(c, {d}, {u32(sign << 31 | exp << 23 | frac << 19)});"]
+    exp = ((b6 ^ 1) << 10) | ((0xFF if b6 else 0) << 2) | top2
+    return [f"c->d[{d}] = 0x{sign << 63 | exp << 52 | frac << 48:016x}ull;"]
+
+
+VARITH = {arm.ARM_INS_VADD: "{n} + {m}", arm.ARM_INS_VSUB: "{n} - {m}", arm.ARM_INS_VMUL: "{n} * {m}",
+          arm.ARM_INS_VDIV: "{n} / {m}"}
+# multiply-accumulate in ARM's two-rounding form: product, then FPAdd of the (negated) operands
+VMAC = {arm.ARM_INS_VMLA: "acc + p", arm.ARM_INS_VMLS: "acc + (-p)", arm.ARM_INS_VNMLA: "(-acc) + (-p)",
+        arm.ARM_INS_VNMLS: "(-acc) + p"}
+
+
+def lift_varith(ins):
+    ops = ins.ci.operands
+    (k, d), (_, n), (_, m) = (_vreg(ins, op) for op in ops)
+    t = "float" if k == "s" else "double"
+    iid = ins.ci.id
+    if iid in VARITH:
+        return [_vset(k, d, VARITH[iid].format(n=_vget(k, n), m=_vget(k, m)))]
+    if iid == arm.ARM_INS_VNMUL:
+        return [f"{t} p = {_vget(k, n)} * {_vget(k, m)};", _vset(k, d, "-p")]
+    return [f"{t} acc = {_vget(k, d)};", f"{t} p = {_vget(k, n)} * {_vget(k, m)};", _vset(k, d, VMAC[iid])]
+
+
+def lift_vunary(ins):
+    (k, d), (_, m) = (_vreg(ins, op) for op in ins.ci.operands)
+    iid = ins.ci.id
+    sign = "0x80000000u" if k == "s" else "0x8000000000000000ull"
+    if iid == arm.ARM_INS_VABS:  # sign-bit operations, NaNs untouched
+        return [_vbits_set(k, d, f"{_vbits_get(k, m)} & ~{sign}")]
+    if iid == arm.ARM_INS_VNEG:
+        return [_vbits_set(k, d, f"{_vbits_get(k, m)} ^ {sign}")]
+    return [_vset(k, d, f"__builtin_sqrt{'f' if k == 's' else ''}({_vget(k, m)})")]
+
+
+def lift_vcmp(ins):
+    ops = ins.ci.operands
+    k, a = _vreg(ins, ops[0])
+    if len(ops) == 2 and ops[1].type == arm.ARM_OP_REG:
+        b = f"(double){_vget(k, _vreg(ins, ops[1])[1])}"
+    else:
+        b = "0.0"
+    return [f"nj_vcmp(c, (double){_vget(k, a)}, {b});"]
+
+
+def lift_vcvt(ins):
+    """vcvt between f32/f64/s32/u32 (float->int rounds towards zero with saturation) and fixed-point->float."""
+    parts = ins.ci.mnemonic.split(".")
+    if len(parts) != 3 or not parts[0].startswith("vcvt") or parts[0] not in ("vcvt",) + tuple("vcvt" + c for c in COND_SUFFIX):
+        ins.unsupported("vcvt variant")
+    dst, src = parts[1], parts[2]
+    ops = ins.ci.operands
+    (dk, d), (sk, m) = _vreg(ins, ops[0]), _vreg(ins, ops[1])
+    if len(ops) == 3:  # fixed-point (32-bit) to float: exact value, one rounding
+        fbits = ops[2].imm
+        if dst not in ("f32", "f64") or src not in ("s32", "u32") or sk != dk:
+            ins.unsupported("fixed-point vcvt")
+        if dk == "s":
+            ival = f"(double)(int32_t)nj_get_s(c, {m})" if src == "s32" else f"(double)nj_get_s(c, {m})"
+        else:
+            ival = f"(double)(int32_t)(uint32_t)c->d[{m}]" if src == "s32" else f"(double)(uint32_t)c->d[{m}]"
+        t = "float" if dst == "f32" else "double"
+        return [_vset(dk, d, f"({t})({ival} / {float(1 << fbits)!r})")]
+    if dst in ("s32", "u32"):
+        return [f"nj_set_s(c, {d}, nj_cvt_{dst}((double){_vget(sk, m)}));"]
+    if src in ("s32", "u32"):
+        t = "float" if dst == "f32" else "double"
+        ival = f"(int32_t)nj_get_s(c, {m})" if src == "s32" else f"nj_get_s(c, {m})"
+        return [_vset(dk, d, f"({t}){ival}")]
+    if (dst, src) == ("f64", "f32"):
+        return [_vset("d", d, f"(double){_vget('s', m)}")]
+    if (dst, src) == ("f32", "f64"):
+        return [_vset("s", d, f"(float){_vget('d', m)}")]
+    ins.unsupported("vcvt variant")
+
+
+COND_SUFFIX = ("eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le")
+
+VFP_HANDLERS = {
+    arm.ARM_INS_VLDR: lift_vldst, arm.ARM_INS_VSTR: lift_vldst,
+    arm.ARM_INS_VMOV: lift_vmov, arm.ARM_INS_FCONSTS: lift_fconst, arm.ARM_INS_FCONSTD: lift_fconst,
+    arm.ARM_INS_FMSTAT: lambda ins: ["nj_fmstat(c);"],
+    arm.ARM_INS_VADD: lift_varith, arm.ARM_INS_VSUB: lift_varith, arm.ARM_INS_VMUL: lift_varith,
+    arm.ARM_INS_VDIV: lift_varith, arm.ARM_INS_VMLA: lift_varith, arm.ARM_INS_VMLS: lift_varith,
+    arm.ARM_INS_VNMLA: lift_varith, arm.ARM_INS_VNMLS: lift_varith, arm.ARM_INS_VNMUL: lift_varith,
+    arm.ARM_INS_VABS: lift_vunary, arm.ARM_INS_VNEG: lift_vunary, arm.ARM_INS_VSQRT: lift_vunary,
+    arm.ARM_INS_VCMP: lift_vcmp, arm.ARM_INS_VCMPE: lift_vcmp,
+    arm.ARM_INS_VCVT: lift_vcvt,
+} | {getattr(arm, "ARM_INS_" + n): lift_vblock for n in ("VLDMIA", "VLDMDB", "VSTMIA", "VSTMDB", "VPUSH", "VPOP")
+     if hasattr(arm, "ARM_INS_" + n)}
+
+
 MEM_IDS = ("LDR", "LDRB", "LDRT", "LDRBT", "STR", "STRB", "STRT", "STRBT", "LDRH", "STRH", "LDRSB", "LDRSH",
            "LDRD", "STRD", "LDM", "LDMIB", "LDMDA", "LDMDB", "STM", "STMIB", "STMDA", "STMDB", "PUSH", "POP")
 
@@ -439,7 +630,7 @@ HANDLERS = {
     arm.ARM_INS_SXTAB: lift_extend, arm.ARM_INS_SXTAH: lift_extend,
     arm.ARM_INS_BFI: lift_bitfield, arm.ARM_INS_BFC: lift_bitfield, arm.ARM_INS_UBFX: lift_bitfield,
     arm.ARM_INS_SBFX: lift_bitfield,
-} | {getattr(arm, "ARM_INS_" + n): lift_mem for n in MEM_IDS if hasattr(arm, "ARM_INS_" + n)}
+} | {getattr(arm, "ARM_INS_" + n): lift_mem for n in MEM_IDS if hasattr(arm, "ARM_INS_" + n)} | VFP_HANDLERS
 
 
 def lift_insn(ci, lc):

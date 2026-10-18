@@ -4,8 +4,12 @@
 #define NJ_RECOMP_RT_H
 
 #include <stdint.h>
+#include <string.h>
 
 #include "nj/guest.h"
+
+/* VFP vmla/vmls round twice: never fuse a*b+c into one rounding. */
+#pragma clang fp contract(off)
 
 /* ---- conditions ---- */
 #define NJ_COND_EQ(c) ((c)->z)
@@ -86,6 +90,52 @@ static inline uint32_t nj_shift_c(int kind, uint32_t v, uint32_t amount, uint32_
 static inline uint32_t nj_shift(const NjCtx *c, int kind, uint32_t v, uint32_t amount) {
     uint32_t carry = c->c;
     return nj_shift_c(kind, v, amount, &carry);
+}
+
+/* ---- VFP (FPSCR control bits are 0 on Android: round to nearest, no flush-to-zero, no default NaN) ---- */
+static inline float nj_sf(const NjCtx *c, int n) {
+    uint32_t b = nj_get_s(c, n);
+    float f;
+    memcpy(&f, &b, 4);
+    return f;
+}
+static inline void nj_set_sf(NjCtx *c, int n, float f) {
+    uint32_t b;
+    memcpy(&b, &f, 4);
+    nj_set_s(c, n, b);
+}
+static inline double nj_df(const NjCtx *c, int n) {
+    double f;
+    memcpy(&f, &c->d[n], 8);
+    return f;
+}
+static inline void nj_set_df(NjCtx *c, int n, double f) { memcpy(&c->d[n], &f, 8); }
+
+/* vcmp/vcmpe: FPSCR NZCV = 0110 equal, 1000 less, 0010 greater, 0011 unordered (float args convert exactly). */
+static inline void nj_vcmp(NjCtx *c, double a, double b) {
+    uint32_t nzcv = a != a || b != b ? 0x3u : a == b ? 0x6u : a < b ? 0x8u : 0x2u;
+    c->fpscr = (c->fpscr & 0x0FFFFFFFu) | nzcv << 28;
+}
+
+/* vmrs APSR_nzcv, fpscr */
+static inline void nj_fmstat(NjCtx *c) {
+    c->n = c->fpscr >> 31 & 1;
+    c->z = c->fpscr >> 30 & 1;
+    c->c = c->fpscr >> 29 & 1;
+    c->v = c->fpscr >> 28 & 1;
+}
+
+/* Float to integer, rounding towards zero with ARM saturation (NaN -> 0); a C cast would be undefined. */
+static inline uint32_t nj_cvt_s32(double x) {
+    if (x != x) return 0;
+    if (x >= 2147483648.0) return 0x7FFFFFFFu;
+    if (x <= -2147483649.0) return 0x80000000u;
+    return (uint32_t)(int32_t)x;
+}
+static inline uint32_t nj_cvt_u32(double x) {
+    if (x != x || x <= -1.0) return 0;
+    if (x >= 4294967296.0) return 0xFFFFFFFFu;
+    return (uint32_t)x;
 }
 
 #endif
