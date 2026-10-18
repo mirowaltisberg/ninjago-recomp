@@ -60,6 +60,14 @@ void hle_register(const char *name, NjHleFn fn) {
     pthread_mutex_unlock(&lock);
 }
 
+NjHleFn hle_lookup(const char *name) {
+    pthread_mutex_lock(&lock);
+    Entry *e = map_get(&fns, name, 0);
+    NjHleFn fn = e ? e->fn : NULL;
+    pthread_mutex_unlock(&lock);
+    return fn;
+}
+
 uint32_t hle_thunk(const char *name) {
     pthread_mutex_lock(&lock);
     Entry *e = map_get(&fns, name, 1);

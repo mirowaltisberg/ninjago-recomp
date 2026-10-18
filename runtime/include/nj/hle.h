@@ -15,6 +15,8 @@ void hle_register(const char *name, NjHleFn fn);
 /* Stable guest address of the thunk for name (created on first use). Slot i at NJ_THUNK_BASE + 8*i
  * holds "svc #i; bx lr". A thunk without a registered fn is fatal when called. */
 uint32_t hle_thunk(const char *name);
+/* Registered fn for a name (NULL if none). */
+NjHleFn hle_lookup(const char *name);
 /* fn for a thunk address (NULL if not a thunk or not implemented); name_out receives the name. */
 NjHleFn hle_fn_at(uint32_t thunk_ga, const char **name_out);
 /* Thunk index -> name (NULL if out of range). */
