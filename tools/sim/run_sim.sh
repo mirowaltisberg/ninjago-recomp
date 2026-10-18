@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the Simulator app (Unicorn backend), installs it in the booted Simulator and launches it with the game
+# Builds the Simulator app (recompiled guest code), installs it in the booted Simulator and launches it with the game
 # files from input/. With SECONDS > 0: waits, saves build/sim-shot.png and stops the app.
 # With SECONDS = 0: leaves the game running to play with the mouse (open -a Simulator).
 # Optional NJ_TAPS="frame,x,y;frame,x,y" (pixels) injects taps (developer testing); other NJ_* variables are
@@ -7,7 +7,7 @@
 set -euo pipefail
 SECS="${1:-25}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-"$ROOT/tools/unicorn/build_unicorn_sim.sh"
+cmake -S "$ROOT" -B "$ROOT/build" -G Ninja > /dev/null && cmake --build "$ROOT/build" --target nj_guest_aot > /dev/null # gen/
 (cd "$ROOT/ios" && xcodegen generate --quiet)
 DEV=$(xcrun simctl list devices booted | grep -Eo '[0-9A-F-]{36}' | head -1)
 [ -n "$DEV" ] || { echo "no booted Simulator"; exit 1; }

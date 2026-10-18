@@ -12,7 +12,7 @@ build/
 *.xcarchive
 DerivedData/
 # Tooling
-.venv/
+.venv
 __pycache__/
 .DS_Store
 ios/Ninjago.xcodeproj/

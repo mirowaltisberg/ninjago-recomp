@@ -58,13 +58,28 @@ static OSStatus render(void *ref, AudioUnitRenderActionFlags *flags, const Audio
     return noErr;
 }
 
+static AudioUnit output_unit;
+
+/* Ambient: a game respects the silent switch and lets the player's own music continue. After an interruption
+ * (a call, Siri) iOS stops the output unit; it is restarted when the interruption ends or the game resumes. */
+void nj_ios_audio_resume(void) {
+    if (!output_unit) return;
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    AudioOutputUnitStart(output_unit);
+}
+
 int nj_audio_output_start(void) {
     static dispatch_once_t once;
     static int rc = -1;
     dispatch_once(&once, ^{
         AVAudioSession *session = [AVAudioSession sharedInstance];
-        [session setCategory:AVAudioSessionCategoryPlayback error:nil];
+        [session setCategory:AVAudioSessionCategoryAmbient error:nil];
         [session setActive:YES error:nil];
+        [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionInterruptionNotification object:session
+                                                           queue:nil usingBlock:^(NSNotification *n) {
+            NSNumber *type = n.userInfo[AVAudioSessionInterruptionTypeKey];
+            if (type.unsignedIntegerValue == AVAudioSessionInterruptionTypeEnded) nj_ios_audio_resume();
+        }];
         AudioComponentDescription d = {kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
         AudioComponent comp = AudioComponentFindNext(NULL, &d);
         AudioUnit unit;
@@ -82,6 +97,7 @@ int nj_audio_output_start(void) {
         AURenderCallbackStruct cb = {render, NULL};
         AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb);
         if (AudioUnitInitialize(unit) == noErr && AudioOutputUnitStart(unit) == noErr) rc = 0;
+        output_unit = unit;
     });
     return rc;
 }

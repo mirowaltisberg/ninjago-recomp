@@ -185,6 +185,7 @@ static const char *env_or(const char *name, NSString *fallback) {
     _paused = NO;
     [EAGLContext setCurrentContext:_ctx];
     nj_resume();
+    nj_ios_audio_resume();
 }
 
 /* ---- touches with Android pointer-id semantics ---- */
@@ -235,6 +236,7 @@ static const char *env_or(const char *name, NSString *fallback) {
         int pid = [self slotFor:t create:YES];
         CGPoint p = [self pixels:t];
         nj_touch(first ? NJ_TOUCH_FIRST_DOWN : NJ_TOUCH_POINTER_DOWN, pid, (float)p.x, (float)p.y);
+        if (getenv("NJ_TOUCH_LOG")) NSLog(@"[ninjago] touch %s %d at %.0f,%.0f (overlay scaled %d)", first ? "first" : "pointer", pid, p.x, p.y, nj_gles_hud_scaled());
         if (!first) [self moveAll];
     }
 }
