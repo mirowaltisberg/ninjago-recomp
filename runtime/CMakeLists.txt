@@ -8,7 +8,7 @@ set_source_files_properties(${NJ_DLMALLOC} PROPERTIES
 add_library(nj_runtime STATIC ${NJ_RUNTIME_SOURCES} ${NJ_DLMALLOC})
 target_include_directories(nj_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
-target_link_libraries(nj_runtime PUBLIC Threads::Threads)
+target_link_libraries(nj_runtime PUBLIC Threads::Threads "-framework CoreFoundation")
 
 # CPU backends (exactly one is linked per executable).
 find_package(PkgConfig REQUIRED)
