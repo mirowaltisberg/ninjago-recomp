@@ -9,7 +9,7 @@
 
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static volatile uint64_t frames;
-static volatile float peak;
+static volatile float peak, max_peak;
 
 static void *pump(void *arg) {
     (void)arg;
@@ -21,6 +21,7 @@ static void *pump(void *arg) {
         float p = 0;
         for (int i = 0; i < 2 * BLOCK; i++) if (fabsf(buf[i]) > p) p = fabsf(buf[i]);
         peak = p;
+        if (p > max_peak) max_peak = p;
         frames += BLOCK;
         next.tv_nsec += 10000000;
         if (next.tv_nsec >= 1000000000) { next.tv_sec++; next.tv_nsec -= 1000000000; }
@@ -45,3 +46,4 @@ static void start(void) {
 int nj_audio_output_start(void) { pthread_once(&once, start); return 0; }
 uint64_t nj_audio_null_frames(void) { return frames; }
 float nj_audio_null_peak(void) { return peak; }
+float nj_audio_null_max_peak(void) { return max_peak; }

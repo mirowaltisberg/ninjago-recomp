@@ -132,6 +132,12 @@ static void hle_fopen(NjCtx *c) {
     note_open(hle_cstr(A(0)), f != NULL);
     if (!f) { set_host_errno(); hle_ret(c, 0); return; }
     uint32_t gf = nj_calloc(1, NJ_BIONIC_FILE_SIZE);
+    /* bionic struct __sFILE: _flags (short) at 12, _file (short) at 14. Inline fileno()/feof() macros
+     * read these directly, so they must hold the host fd and plausible mode bits. */
+    const char *mode = hle_cstr(A(1));
+    uint16_t flags = strchr(mode, '+') ? 0x0010 /* __SRW */ : (mode[0] == 'r' ? 0x0004 /* __SRD */ : 0x0008 /* __SWR */);
+    nj_w16(gf + 12, flags);
+    nj_w16(gf + 14, (uint16_t)fileno(f));
     pthread_mutex_lock(&fs_lock);
     int slot = -1;
     for (int i = 0; i < MAX_FILES; i++) if (!files[i].ga) { slot = i; break; }

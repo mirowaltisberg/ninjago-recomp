@@ -246,7 +246,7 @@ NJ_TEST(sl_mp3_player_fd) {
     nj_w32(loc + 4, (uint32_t)fd);
     nj_w64(loc + 8, off);
     nj_w64(loc + 16, len);
-    nj_w32(fmt, 3); /* SL_DATAFORMAT_MIME */
+    nj_w32(fmt, 1); /* SL_DATAFORMAT_MIME */
     nj_w32(ids, iid("SL_IID_PLAY"));
     nj_w32(ids + 4, iid("SL_IID_SEEK"));
     nj_w32(req, 1);

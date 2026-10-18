@@ -194,6 +194,7 @@ static void e_CreateOutputMix(NjCtx *c) {
 static int create_stream(Obj *p, uint32_t src) {
     uint32_t loc = nj_r32(src), fmt = nj_r32(src + 4);
     uint32_t type = nj_r32(loc);
+    if (getenv("NJ_AUDIO_DEBUG")) fprintf(stderr, "[opensl] CreateAudioPlayer locator 0x%08x format %u\n", type, fmt ? nj_r32(fmt) : 0);
     if (type == SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE || type == SL_DATALOCATOR_BUFFERQUEUE) {
         if (nj_r32(fmt) != SL_DATAFORMAT_PCM) nj_fatal("OpenSL buffer queue with data format %u", nj_r32(fmt));
         p->is_bq = 1;
@@ -203,7 +204,10 @@ static int create_stream(Obj *p, uint32_t src) {
         int fd = (int)nj_r32(loc + 4);
         int64_t off = (int64_t)nj_r64(loc + 8), len = (int64_t)nj_r64(loc + 16);
         if (len < 0) len = 0x7FFFFFFFFFFFFFFFLL; /* SL_DATALOCATOR_ANDROIDFD_USE_FILE_SIZE */
-        return nj_audio_create_mp3_fd(fd, (uint64_t)off, (uint64_t)len);
+        int id = nj_audio_create_mp3_fd(fd, (uint64_t)off, (uint64_t)len);
+        if (getenv("NJ_AUDIO_DEBUG"))
+            fprintf(stderr, "[opensl] fd player: fd %d offset %lld length %lld -> stream %d\n", fd, (long long)off, (long long)len, id);
+        return id;
     }
     if (type == SL_DATALOCATOR_URI) {
         const char *uri = hle_cstr(nj_r32(loc + 4));
@@ -249,6 +253,7 @@ static void p_SetPlayState(NjCtx *c) {
     Obj *o = obj_of(A(0));
     uint32_t st = A(1);
     o->play_state = st;
+    if (getenv("NJ_AUDIO_DEBUG") && !o->is_bq) fprintf(stderr, "[opensl] music player state %u\n", st);
     nj_audio_set_playing(o->stream, st == SL_PLAYSTATE_PLAYING);
     if (st == SL_PLAYSTATE_STOPPED && !o->is_bq) nj_audio_seek_ms(o->stream, 0);
     hle_ret(c, SL_RESULT_SUCCESS);

@@ -40,9 +40,11 @@ data. **iOS GPUs have no ATC support → the iOS GL layer must decode ATC to RGB
 |---|---|---|
 | 100 % CPU, no progress inside `nativeInit` | `SLPlaybackRateItf::GetRateRange` returned success for every index; the engine enumerates ranges until an error (46 M calls in 20 s) | only index 0 exists; others return `SL_RESULT_PARAMETER_INVALID` (test `sl_rate_range_index_bounds`) |
 | Game seemed stuck on the first screen | harness ran 1200 frames in 0.27 s; loading is time-based | `--fps` pacing in the harness |
+| Music silent; the music player got fd 0 | bionic's inline `fileno()` reads `FILE::_file` (offset 14) directly; our guest FILE objects were zeroed | `fopen` fills `_flags`/`_file` (test `fs_fileno_field_inline`) → music plays (peak 0.44) |
 
 ## Observations for later milestones
 
 - `[java] Flurry(FLURRY_EVENT_CHARACTER)` is logged repeatedly (analytics, harmless).
-- The OpenSL locator types actually used (buffer queue vs. MP3 via fd/URI) still need confirming once music plays
-  (M4); no fatal from unsupported locators so far.
+- Audio, confirmed: 30 PCM buffer-queue players (sound effects, `SL_DATAFORMAT_PCM`) and 1 music player with
+  `SL_DATALOCATOR_ANDROIDFD` (fd of the OBB + entry offset/length) and `SL_DATAFORMAT_MIME` (MP3, decoded by minimp3).
+- Shaders are plain GLSL ES 1.00 (19 dumped, no `#version`/`#extension`), so they compile on iOS unchanged.

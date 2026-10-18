@@ -202,3 +202,23 @@ NJ_TEST(fs_mkdir_remove) {
     uint32_t w2[] = {gstr(FILES "/sub")};
     NJ_EQ_U(call("remove", w2, 1), 0);
 }
+
+NJ_TEST(fs_fileno_field_inline) {
+    setup();
+    char host[512];
+    snprintf(host, sizeof host, "%s/e.bin", tmpdir);
+    FILE *hf = fopen(host, "wb");
+    fputs("12345", hf);
+    fclose(hf);
+    uint32_t w[] = {gstr(FILES "/e.bin"), gstr("rb")};
+    uint32_t f = call("fopen", w, 2);
+    NJ_CHECK(f != 0);
+    /* bionic's fileno() macro reads FILE::_file (short at offset 14) directly */
+    int fd = (int16_t)nj_r16(f + 14);
+    struct stat st;
+    NJ_EQ_U(fstat(fd, &st), 0);
+    NJ_EQ_U(st.st_size, 5);
+    NJ_CHECK(nj_r16(f + 12) & 0x0004); /* __SRD */
+    uint32_t wc[] = {f};
+    call("fclose", wc, 1);
+}

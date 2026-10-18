@@ -38,6 +38,7 @@ void nj_audio_mix(float *out, uint32_t frames);
 int nj_audio_output_start(void);
 uint64_t nj_audio_null_frames(void);
 float nj_audio_null_peak(void);
+float nj_audio_null_max_peak(void);
 
 /* OpenSL ES: slCreateEngine + the six SL_IID_* data imports and all interface methods. */
 void hle_opensl_register(void);
