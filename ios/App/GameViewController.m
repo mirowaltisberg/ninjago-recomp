@@ -15,6 +15,8 @@
     GLint _w, _h;
     CADisplayLink *_link;
     BOOL _booted, _paused;
+    long _frameNo;
+    int _taps[32][3], _ntaps; /* NJ_TAPS developer option: frame, x, y in pixels */
     NSMutableArray<UITouch *> *_touches; /* index = Android pointer id; NSNull marks a free slot */
 }
 
@@ -80,6 +82,12 @@ static const char *env_or(const char *name, NSString *fallback) {
         return;
     }
     NSLog(@"[ninjago] boot done in %.2f s", CFAbsoluteTimeGetCurrent() - t0);
+    const char *taps = getenv("NJ_TAPS");
+    for (const char *p = taps; p && *p && _ntaps < 32;) {
+        if (sscanf(p, "%d,%d,%d", &_taps[_ntaps][0], &_taps[_ntaps][1], &_taps[_ntaps][2]) == 3) _ntaps++;
+        p = strchr(p, ';');
+        if (p) p++;
+    }
     _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(frame:)];
     _link.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
     [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
@@ -88,6 +96,11 @@ static const char *env_or(const char *name, NSString *fallback) {
 - (void)frame:(CADisplayLink *)link {
     if (_paused) return;
     [EAGLContext setCurrentContext:_ctx];
+    for (int i = 0; i < _ntaps; i++) {
+        if (_frameNo == _taps[i][0]) nj_touch(0, 0, (float)_taps[i][1], (float)_taps[i][2]);
+        if (_frameNo == _taps[i][0] + 4) nj_touch(2, 0, (float)_taps[i][1], (float)_taps[i][2]);
+    }
+    _frameNo++;
     glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
     nj_frame();
     glBindRenderbuffer(GL_RENDERBUFFER, _color);
