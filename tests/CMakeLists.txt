@@ -1,0 +1,18 @@
+add_library(nj_test_main STATIC c/nj_test_main.c)
+target_link_libraries(nj_test_main PUBLIC nj_runtime)
+target_include_directories(nj_test_main PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/c)
+target_compile_definitions(nj_test_main PUBLIC
+  NJ_GUEST_SO_PATH="${NJ_GUEST_SO}"
+  NJ_GUEST_OBB_PATH="${NJ_GUEST_OBB}")
+
+# nj_add_test(<name> [LIBS libs...]) builds tests/c/<name>.c into one executable and registers it.
+function(nj_add_test name)
+  cmake_parse_arguments(T "" "" "LIBS" ${ARGN})
+  add_executable(${name} c/${name}.c)
+  # Whole-archive so NJ_TEST constructors in the test file and runtime registrations are kept.
+  target_link_libraries(${name} PRIVATE nj_test_main ${T_LIBS})
+  add_test(NAME ${name} COMMAND ${name})
+  set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
+endfunction()
+
+nj_add_test(test_mem)
