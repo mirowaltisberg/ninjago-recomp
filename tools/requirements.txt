@@ -1,0 +1,4 @@
+capstone==5.0.7
+pyelftools
+unicorn==2.1.4
+pytest
