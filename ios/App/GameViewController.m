@@ -5,9 +5,12 @@
 #import <OpenGLES/ES2/glext.h>
 
 #import "GameView.h"
+#import "NJOptions.h"
 #import "NJPlatformIOS.h"
+#import "OptionsViewController.h"
 
 #include "boot.h"
+#include "cheats.h"
 #include "nj/gles.h"
 
 @implementation GameViewController {
@@ -20,6 +23,8 @@
     CFAbsoluteTime _statT0, _statBusy; /* frame-rate log */
     int _taps[32][3], _ntaps; /* NJ_TAPS developer option: frame, x, y in pixels */
     NSMutableArray<UITouch *> *_touches; /* index = Android pointer id; NSNull marks a free slot */
+    UILabel *_fps;
+    CFAbsoluteTime _fpsT0;
 }
 
 /* The Simulator renders OpenGL ES in software, so it draws at 1 pixel per point there (9x fewer pixels than
@@ -44,7 +49,71 @@
     if (_booted || self.view.bounds.size.width < self.view.bounds.size.height) return; /* wait for landscape */
     [self createFramebuffer];
     [self boot];
+    [self addOptionsButton];
+    [self applyOptions];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyOptions) name:NJOptionsDidChange object:nil];
     [self showCredit];
+}
+
+/* ---- options ---- */
+
+/* A small button in the screen corner, outside the area the game draws its controls in (see updateHudScale). */
+- (void)addOptionsButton {
+    UIButtonConfiguration *c = [UIButtonConfiguration filledButtonConfiguration];
+    c.image = [UIImage systemImageNamed:@"slider.horizontal.3"
+                      withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold]];
+    c.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    c.baseBackgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    c.baseForegroundColor = [UIColor colorWithWhite:1 alpha:0.9];
+    c.contentInsets = NSDirectionalEdgeInsetsMake(8, 8, 8, 8);
+    UIButton *b = [UIButton buttonWithConfiguration:c primaryAction:[UIAction actionWithHandler:^(UIAction *a) {
+                                                        [self openOptions];
+                                                    }]];
+    b.accessibilityLabel = @"Options";
+    b.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:b];
+
+    _fps = [UILabel new];
+    _fps.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];
+    _fps.textColor = [UIColor colorWithWhite:1 alpha:0.9];
+    _fps.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45];
+    _fps.textAlignment = NSTextAlignmentCenter;
+    _fps.layer.cornerRadius = 10;
+    _fps.layer.masksToBounds = YES;
+    _fps.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:_fps];
+    [NSLayoutConstraint activateConstraints:@[
+        [b.centerXAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:34],
+        [b.centerYAnchor constraintEqualToAnchor:self.view.topAnchor constant:34],
+        [_fps.centerXAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-40],
+        [_fps.centerYAnchor constraintEqualToAnchor:self.view.topAnchor constant:34],
+        [_fps.widthAnchor constraintEqualToConstant:56],
+        [_fps.heightAnchor constraintEqualToConstant:20],
+    ]];
+}
+
+/* The game stands still while the sheet is open (frame: skips while something is presented); fingers that were
+ * on the screen are released so no control stays held. */
+- (void)openOptions {
+    nj_touch(NJ_TOUCH_CANCEL, 0, 0, 0);
+    [_touches removeAllObjects];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:[OptionsViewController new]];
+    nav.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    nav.view.tintColor = [UIColor colorWithRed:0.96 green:0.76 blue:0.22 alpha:1];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    nav.preferredContentSize = CGSizeMake(560, 0);
+    UISheetPresentationController *sheet = nav.sheetPresentationController;
+    sheet.prefersEdgeAttachedInCompactHeight = YES;
+    sheet.widthFollowsPreferredContentSizeWhenEdgeAttached = YES;
+    sheet.prefersGrabberVisible = YES;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)applyOptions {
+    NjCheats c = [NJOptions cheats];
+    nj_cheats_set(&c);
+    if (_w) [self updateHudScale];
+    _fps.hidden = ![NJOptions boolForKey:NJOptionShowFPS];
 }
 
 /* Credit for the port, shown over the publisher intro at launch. */
@@ -78,7 +147,7 @@
     const CGFloat own_margin = 8; /* the game's controls keep about this much (points) from the edge */
     CGFloat sx = 1 - 2 * MAX(MAX(in.left, in.right) - own_margin, 0) / sz.width;
     CGFloat sy = 1 - 2 * MAX(MAX(in.top, in.bottom) - own_margin, 0) / sz.height;
-    CGFloat s = MAX(MIN(sx, sy), 0.8);
+    CGFloat s = [NJOptions boolForKey:NJOptionSafeArea] ? MAX(MIN(sx, sy), 0.8) : 1.0;
     const char *env = getenv("NJ_HUD_SCALE");
     if (env && atof(env) > 0) s = atof(env);
     nj_gles_set_hud_scale((float)s, _w, _h);
@@ -119,6 +188,7 @@ static const char *env_or(const char *name, NSString *fallback) {
 
 - (void)boot {
     _booted = YES;
+    [NJOptions registerDefaults];
     _touches = [NSMutableArray array];
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *bundle = NSBundle.mainBundle.resourcePath;
@@ -149,7 +219,7 @@ static const char *env_or(const char *name, NSString *fallback) {
 }
 
 - (void)frame:(CADisplayLink *)link {
-    if (_paused) return;
+    if (_paused || self.presentedViewController) return;
     [EAGLContext setCurrentContext:_ctx];
     for (int i = 0; i < _ntaps; i++) {
         if (_frameNo == _taps[i][0]) nj_touch(NJ_TOUCH_FIRST_DOWN, 0, (float)_taps[i][1], (float)_taps[i][2]);
@@ -165,6 +235,10 @@ static const char *env_or(const char *name, NSString *fallback) {
     CFAbsoluteTime t1 = CFAbsoluteTimeGetCurrent();
     _statBusy += t1 - t0;
     if (!_statT0) _statT0 = t1;
+    if (_frameNo % 30 == 0 && !_fps.hidden) {
+        if (_fpsT0) _fps.text = [NSString stringWithFormat:@"%.0f fps", 30 / (t1 - _fpsT0)];
+        _fpsT0 = t1;
+    }
     if (_frameNo % 300 == 0) {
         NSLog(@"[ninjago] %.1f fps, %.1f ms per frame (%dx%d)", 300 / (t1 - _statT0), _statBusy / 300 * 1000, _w, _h);
         _statT0 = t1;
