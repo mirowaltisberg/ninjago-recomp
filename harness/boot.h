@@ -12,6 +12,7 @@ typedef struct {
     bool fixed_clock;
     const char *trace_path;
     const char *device_model; /* reported through nativeSetDeviceStrings */
+    bool unlock_all_characters; /* the game's own cheat bit: every character unlocked and bought */
 } NjBootConfig;
 
 /* Load, register HLE, bind imports, run constructors, then the onCreate/onResume/GL-thread sequence
@@ -20,7 +21,12 @@ int nj_boot(const NjBootConfig *cfg, NjImage *img);
 /* One GameGLSurfaceView.Renderer.onDrawFrame: nativeRender. */
 void nj_frame(void);
 /* Touch input in surface pixels (pointer ids as Android). */
-void nj_touch(int kind, int id, float x, float y); /* kind: 0 down, 1 move, 2 up, 3 cancel-all, 4 pointer-down, 5 pointer-up */
+/* Touch events in Android's order (GameGLSurfaceView.onTouchEvent): the first finger down starts a gesture,
+ * further fingers go down/up individually, and every movement reports all fingers. Coordinates in pixels. */
+enum { NJ_TOUCH_FIRST_DOWN, NJ_TOUCH_MOVE, NJ_TOUCH_LAST_UP, NJ_TOUCH_CANCEL, NJ_TOUCH_POINTER_DOWN, NJ_TOUCH_POINTER_UP };
+void nj_touch(int kind, int id, float x, float y);
+/* Name of the Fusion native a touch kind is delivered to (NULL for an unknown kind). */
+const char *nj_touch_native(int kind);
 void nj_pause(void);
 void nj_resume(void);
 

@@ -195,3 +195,94 @@ NJ_TEST(gl_default_framebuffer_mapping) {
     NJ_EQ_U(nj_r32(out), 5);
     nj_headless_set_default_framebuffer(0);
 }
+
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE0 0x84C0
+
+static void viewport_is(int x, int y, int w, int h) {
+    int v[4];
+    gles_stub_last_viewport(v);
+    NJ_EQ_U(v[0], x);
+    NJ_EQ_U(v[1], y);
+    NJ_EQ_U(v[2], w);
+    NJ_EQ_U(v[3], h);
+}
+
+NJ_TEST(gl_hud_overlay_scaled_after_scene_composite) {
+    setup();
+    nj_gles_set_hud_scale(0.5f, 1000, 500);
+    nj_gles_frame_begin();
+    uint32_t fb2[] = {GL_FRAMEBUFFER, 2}, rt[] = {GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 7, 0};
+    call("glBindFramebuffer", fb2, 2);
+    call("glFramebufferTexture2D", rt, 5); /* texture 7 holds the rendered scene */
+    uint32_t fb0[] = {GL_FRAMEBUFFER, 0}, vp[] = {0, 0, 1000, 500}, unit[] = {GL_TEXTURE0};
+    call("glBindFramebuffer", fb0, 2);
+    call("glViewport", vp, 4);
+    call("glActiveTexture", unit, 1);
+    uint32_t scene[] = {GL_TEXTURE_2D, 7}, icon[] = {GL_TEXTURE_2D, 9}, strip[] = {5, 0, 4}, tris[] = {4, 0, 6};
+    call("glBindTexture", scene, 2);
+    call("glDrawArrays", strip, 3);
+    viewport_is(0, 0, 1000, 500); /* the composited scene stays full screen */
+    call("glBindTexture", icon, 2);
+    call("glDrawArrays", tris, 3);
+    viewport_is(250, 125, 500, 250); /* the overlay drawn after it shrinks towards the centre */
+    nj_gles_frame_begin();
+    NJ_CHECK(nj_gles_hud_scaled());
+    call("glDrawArrays", tris, 3); /* a frame without a scene (menu) is left alone */
+    viewport_is(0, 0, 1000, 500);
+    nj_gles_frame_begin();
+    NJ_CHECK(!nj_gles_hud_scaled());
+    nj_gles_set_hud_scale(1.0f, 1000, 500);
+}
+
+static uint32_t guest_floats(const float *v, int n) {
+    uint32_t ga = nj_malloc(4u * (uint32_t)n);
+    for (int i = 0; i < n; i++) {
+        uint32_t b;
+        memcpy(&b, &v[i], 4);
+        nj_w32(ga + 4u * (uint32_t)i, b);
+    }
+    return ga;
+}
+
+/* Full-screen overlay draws (menu backgrounds, fades) keep the full viewport so no border appears. */
+NJ_TEST(gl_hud_full_screen_overlay_stays_full_size) {
+    setup();
+    nj_gles_set_hud_scale(0.5f, 1000, 500);
+    nj_gles_frame_begin();
+    uint32_t fb2[] = {GL_FRAMEBUFFER, 2}, rt[] = {GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 7, 0};
+    call("glBindFramebuffer", fb2, 2);
+    call("glFramebufferTexture2D", rt, 5);
+    uint32_t fb0[] = {GL_FRAMEBUFFER, 0}, vp[] = {0, 0, 1000, 500}, unit[] = {GL_TEXTURE0};
+    call("glBindFramebuffer", fb0, 2);
+    call("glViewport", vp, 4);
+    call("glActiveTexture", unit, 1);
+    const uint32_t prog = 41;
+    uint32_t qa[] = {prog, hle_guest_strdup("VERTEX_INPUT_PREANIM_Position")};
+    uint32_t qu[] = {prog, hle_guest_strdup("ViewComposite")};
+    uint32_t pos = call("glGetAttribLocation", qa, 2), vc = call("glGetUniformLocation", qu, 2);
+    uint32_t use[] = {prog};
+    call("glUseProgram", use, 1);
+    static const float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    uint32_t um[] = {vc, 1, 0, guest_floats(ident, 16)};
+    call("glUniformMatrix4fv", um, 4);
+    uint32_t nobuf[] = {GL_ARRAY_BUFFER, 0};
+    call("glBindBuffer", nobuf, 2);
+    static const float full[16] = {-1, -1, 0, 1, 1, -1, 0, 1, -1, 1, 0, 1, 1, 1, 0, 1};
+    static const float small[16] = {-.2f, -.2f, 0, 1, .2f, -.2f, 0, 1, -.2f, .2f, 0, 1, .2f, .2f, 0, 1};
+    uint32_t ap_full[] = {pos, 4, 0x1406 /* GL_FLOAT */, 0, 0, guest_floats(full, 16)};
+    uint32_t ap_small[] = {pos, 4, 0x1406, 0, 0, guest_floats(small, 16)};
+    uint32_t scene[] = {GL_TEXTURE_2D, 7}, icon[] = {GL_TEXTURE_2D, 9}, strip[] = {5, 0, 4};
+    call("glVertexAttribPointer", ap_full, 6);
+    call("glBindTexture", scene, 2);
+    call("glDrawArrays", strip, 3); /* composite */
+    call("glBindTexture", icon, 2);
+    call("glDrawArrays", strip, 3); /* a full-screen overlay quad */
+    viewport_is(0, 0, 1000, 500);
+    call("glVertexAttribPointer", ap_small, 6);
+    call("glDrawArrays", strip, 3); /* a button */
+    viewport_is(250, 125, 500, 250);
+    nj_gles_set_hud_scale(1.0f, 1000, 500);
+}

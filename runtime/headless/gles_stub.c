@@ -316,4 +316,12 @@ void glVertexAttribPointer(GLuint i, GLint s, GLenum t, GLboolean n, GLsizei st,
     COUNT();
     last_attrib = p;
 }
-void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) { (void)x; (void)y; (void)w; (void)h; COUNT(); }
+static GLint last_viewport[4];
+void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
+    COUNT();
+    last_viewport[0] = x;
+    last_viewport[1] = y;
+    last_viewport[2] = w;
+    last_viewport[3] = h;
+}
+void gles_stub_last_viewport(int out[4]) { for (int i = 0; i < 4; i++) out[i] = last_viewport[i]; }

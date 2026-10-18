@@ -9,6 +9,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #endif
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,10 +37,8 @@ bool nj_gles_decode_atc = false;
 #define THUNK(fn, ...) static void h_##fn(NjCtx *c) { fn(__VA_ARGS__); }
 #define RET(fn, ...) static void h_##fn(NjCtx *c) { hle_ret(c, (uint32_t)fn(__VA_ARGS__)); }
 
-THUNK(glActiveTexture, U(0))
 THUNK(glBindBuffer, U(0), U(1))
 THUNK(glBindRenderbuffer, U(0), U(1))
-THUNK(glBindTexture, U(0), U(1))
 THUNK(glBlendEquation, U(0))
 THUNK(glBlendFunc, U(0), U(1))
 THUNK(glBufferData, U(0), (GLsizeiptr)U(1), P(2), U(3))
@@ -54,7 +53,6 @@ THUNK(glDeleteFramebuffers, S(0), P(1))
 THUNK(glDeleteProgram, U(0))
 THUNK(glDeleteRenderbuffers, S(0), P(1))
 THUNK(glDeleteShader, U(0))
-THUNK(glDeleteTextures, S(0), P(1))
 THUNK(glDepthFunc, U(0))
 THUNK(glDepthMask, B(0))
 THUNK(glDepthRangef, F(0), F(1))
@@ -65,7 +63,6 @@ THUNK(glEnableVertexAttribArray, U(0))
 V0(glFinish)
 V0(glFlush)
 THUNK(glFramebufferRenderbuffer, U(0), U(1), U(2), U(3))
-THUNK(glFramebufferTexture2D, U(0), U(1), U(2), U(3), S(4))
 THUNK(glFrontFace, U(0))
 THUNK(glGenBuffers, S(0), P(1))
 THUNK(glGenFramebuffers, S(0), P(1))
@@ -82,7 +79,6 @@ THUNK(glGetShaderInfoLog, U(0), S(1), P(2), P(3))
 THUNK(glGetShaderiv, U(0), U(1), P(2))
 RET(glGetUniformLocation, U(0), P(1))
 THUNK(glRenderbufferStorage, U(0), U(1), S(2), S(3))
-THUNK(glScissor, S(0), S(1), S(2), S(3))
 THUNK(glStencilFunc, U(0), S(1), U(2))
 THUNK(glStencilMask, U(0))
 THUNK(glStencilOp, U(0), U(1), U(2))
@@ -93,8 +89,6 @@ THUNK(glUniform1fv, S(0), S(1), P(2))
 THUNK(glUniform1i, S(0), S(1))
 THUNK(glUniform3fv, S(0), S(1), P(2))
 THUNK(glUniform4fv, S(0), S(1), P(2))
-THUNK(glUniformMatrix4fv, S(0), S(1), B(2), P(3))
-THUNK(glViewport, S(0), S(1), S(2), S(3))
 THUNK(glGenVertexArraysOES, S(0), P(1))
 THUNK(glBindVertexArrayOES, U(0))
 THUNK(glDeleteVertexArraysOES, S(0), P(1))
@@ -122,6 +116,10 @@ static int nskip_text, nskip_prog, skip_stencil, log_left, dbg_on, dbg_stats;
 static const char *dump_dir, *ctl_path;
 static struct timespec ctl_mtime;
 static _Thread_local GLuint cur_program;
+static _Thread_local GLuint t_fb, t_unit, t_tex0; /* guest framebuffer (0 = screen), active unit, unit 0's 2D texture */
+/* Client-side vertex arrays per attribute, for the overlay's full-screen test. */
+typedef struct { GLint size; GLenum type; GLsizei stride; const uint8_t *client; } AttribArray;
+static _Thread_local AttribArray t_attr[16];
 
 /* Caller holds key_lock. Rules are separated by commas or newlines. */
 static void parse_rules(const char *text) {
@@ -269,8 +267,11 @@ static int dbg_drop(GLenum mode, GLsizei count) {
         glGetIntegerv(GL_FRONT_FACE, &ff);
         char sk[200];
         short_key(key, sk, sizeof sk);
-        fprintf(stderr, "[gl] draw prog %u mode %u n %d fb %d depth %d/0x%x/%d blend %d 0x%x/0x%x cull %d ff 0x%x stencil %d%s %s\n",
-                cur_program, mode, count, fb, glIsEnabled(GL_DEPTH_TEST), df, dm, glIsEnabled(GL_BLEND), bs, bd,
+        GLint ab = 0, eb = 0;
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &ab);
+        glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &eb);
+        fprintf(stderr, "[gl] draw vbo %d ibo %d prog %u mode %u n %d fb %d tex %u depth %d/0x%x/%d blend %d 0x%x/0x%x cull %d ff 0x%x stencil %d%s %s\n",
+                ab, eb, cur_program, mode, count, fb, t_tex0, glIsEnabled(GL_DEPTH_TEST), df, dm, glIsEnabled(GL_BLEND), bs, bd,
                 glIsEnabled(GL_CULL_FACE), ff, stencil, drop ? " DROPPED" : "", sk);
     }
     if (dbg_stats && stencil) {
@@ -291,14 +292,187 @@ static int dbg_drop(GLenum mode, GLsizei count) {
     return drop;
 }
 
+static void hud_before_draw(GLenum mode, GLint first, GLsizei count, GLenum itype, const void *indices); /* below */
+
 static void h_glDrawArrays(NjCtx *c) {
+    hud_before_draw(U(0), S(1), S(2), 0, NULL);
     if (dbg_drop(U(0), S(2))) return;
     glDrawArrays(U(0), S(1), S(2));
+}
+
+/* ---- overlay inset ----
+ * In gameplay the engine renders the 3D scene into a texture, draws that texture full screen, then draws the
+ * 2D overlay (controls, HUD) on top. Draws to the screen after the scene texture has been drawn this frame get
+ * a viewport (and scissor) scaled towards the screen centre. Bindings are tracked per thread: the loader
+ * thread has its own context. */
+static float hud_s = 1.0f;
+static int screen_w, screen_h;
+static int scene_this_frame, scene_last_frame;
+static GLuint rt_tex[64]; /* textures attached to framebuffers (render targets) */
+static int nrt;
+static pthread_mutex_t rt_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local GLint t_vp[4], t_sc[4];
+static _Thread_local int t_sc_set, t_scaled;
+
+void nj_gles_set_hud_scale(float s, int w, int h) {
+    hud_s = s > 0 && s < 1 ? s : 1.0f;
+    screen_w = w;
+    screen_h = h;
+}
+void nj_gles_frame_begin(void) {
+    scene_last_frame = scene_this_frame;
+    scene_this_frame = 0;
+}
+bool nj_gles_hud_scaled(void) { return hud_s < 1.0f && scene_last_frame; }
+float nj_gles_hud_scale_factor(void) { return hud_s; }
+
+static void scaled_box(const GLint in[4], GLint out[4]) {
+    float cx = screen_w / 2.0f, cy = screen_h / 2.0f;
+    out[0] = (GLint)lroundf(cx + (in[0] - cx) * hud_s);
+    out[1] = (GLint)lroundf(cy + (in[1] - cy) * hud_s);
+    out[2] = (GLint)lroundf(in[2] * hud_s);
+    out[3] = (GLint)lroundf(in[3] * hud_s);
+}
+
+static void apply_viewport(void) {
+    GLint v[4];
+    if (t_scaled) scaled_box(t_vp, v);
+    else memcpy(v, t_vp, sizeof v);
+    glViewport(v[0], v[1], v[2], v[3]);
+    if (!t_sc_set) return;
+    if (t_scaled) scaled_box(t_sc, v);
+    else memcpy(v, t_sc, sizeof v);
+    glScissor(v[0], v[1], v[2], v[3]);
+}
+
+static int is_render_target(GLuint tex) {
+    pthread_mutex_lock(&rt_lock);
+    int found = 0;
+    for (int i = 0; i < nrt && !found; i++) found = rt_tex[i] == tex;
+    pthread_mutex_unlock(&rt_lock);
+    return found;
+}
+
+/* Per program: the engine's position attribute and ViewComposite matrix (gl_Position = ViewComposite * pos). */
+typedef struct { GLuint prog; GLint pos, vc; float m[16]; int m_set; } ProgView;
+static ProgView prog_views[256];
+static int nprog_views;
+
+static ProgView *prog_view(GLuint prog) {
+    for (int i = 0; i < nprog_views; i++)
+        if (prog_views[i].prog == prog) return &prog_views[i];
+    if (nprog_views == 256) return NULL;
+    ProgView *pv = &prog_views[nprog_views++];
+    *pv = (ProgView){prog, glGetAttribLocation(prog, "VERTEX_INPUT_PREANIM_Position"),
+                     glGetUniformLocation(prog, "ViewComposite"), {0}, 0};
+    return pv;
+}
+
+static void h_glUniformMatrix4fv(NjCtx *c) {
+    const GLfloat *v = P(3);
+    if (hud_s < 1.0f && v && S(1) >= 1 && !B(2)) {
+        ProgView *pv = prog_view(cur_program);
+        if (pv && pv->vc >= 0 && pv->vc == S(0)) {
+            memcpy(pv->m, v, sizeof pv->m);
+            pv->m_set = 1;
+        }
+    }
+    glUniformMatrix4fv(S(0), S(1), B(2), v);
+}
+
+/* Whether a draw's vertices (client arrays only) cover the whole screen: backgrounds and fades. */
+static int covers_screen(GLint first, GLsizei count, GLenum itype, const void *indices) {
+    ProgView *pv = prog_view(cur_program);
+    if (!pv || pv->pos < 0 || pv->pos >= 16 || count <= 0) return 0;
+    const AttribArray *a = &t_attr[pv->pos];
+    if (!a->client || a->type != GL_FLOAT || a->size < 2) return 0;
+    GLsizei stride = a->stride ? a->stride : a->size * 4;
+    float lo_x = 1e9f, hi_x = -1e9f, lo_y = 1e9f, hi_y = -1e9f;
+    for (GLsizei k = 0; k < count; k++) {
+        uint32_t i = (uint32_t)(first + k);
+        if (indices) i = itype == GL_UNSIGNED_SHORT ? ((const uint16_t *)indices)[k] : ((const uint8_t *)indices)[k];
+        float v[4] = {0, 0, 0, 1};
+        memcpy(v, a->client + (size_t)i * (size_t)stride, sizeof(float) * (size_t)(a->size < 4 ? a->size : 4));
+        float x = v[0], y = v[1], w = v[3];
+        if (pv->m_set) {
+            const float *m = pv->m; /* column-major */
+            x = m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * v[3];
+            y = m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * v[3];
+            w = m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3];
+        }
+        if (w <= 0) return 0;
+        x /= w;
+        y /= w;
+        lo_x = x < lo_x ? x : lo_x;
+        hi_x = x > hi_x ? x : hi_x;
+        lo_y = y < lo_y ? y : lo_y;
+        hi_y = y > hi_y ? y : hi_y;
+    }
+    return lo_x <= -0.95f && hi_x >= 0.95f && lo_y <= -0.95f && hi_y >= 0.95f;
+}
+
+static void hud_before_draw(GLenum mode, GLint first, GLsizei count, GLenum itype, const void *indices) {
+    (void)mode;
+    int want = 0;
+    if (hud_s < 1.0f && t_fb == 0 && screen_w > 0) {
+        if (is_render_target(t_tex0)) scene_this_frame = 1; /* the composited scene: full screen */
+        else want = scene_this_frame && !covers_screen(first, count, itype, indices);
+    }
+    if (want != t_scaled) {
+        t_scaled = want;
+        apply_viewport();
+    }
+}
+
+static void h_glViewport(NjCtx *c) {
+    for (int i = 0; i < 4; i++) t_vp[i] = S(i);
+    apply_viewport();
+}
+
+static void h_glScissor(NjCtx *c) {
+    for (int i = 0; i < 4; i++) t_sc[i] = S(i);
+    t_sc_set = 1;
+    apply_viewport();
+}
+
+static void h_glActiveTexture(NjCtx *c) {
+    t_unit = U(0) - GL_TEXTURE0;
+    glActiveTexture(U(0));
+}
+
+static void h_glBindTexture(NjCtx *c) {
+    if (U(0) == GL_TEXTURE_2D && t_unit == 0) t_tex0 = U(1);
+    glBindTexture(U(0), U(1));
+}
+
+static void h_glFramebufferTexture2D(NjCtx *c) {
+    GLuint tex = U(3);
+    if (tex && !is_render_target(tex)) {
+        pthread_mutex_lock(&rt_lock);
+        if (nrt < 64) rt_tex[nrt++] = tex;
+        pthread_mutex_unlock(&rt_lock);
+    }
+    glFramebufferTexture2D(U(0), U(1), U(2), tex, S(4));
+}
+
+static void h_glDeleteTextures(NjCtx *c) {
+    const GLuint *ids = P(1);
+    pthread_mutex_lock(&rt_lock);
+    for (GLsizei k = 0; ids && k < S(0); k++)
+        for (int i = 0; i < nrt; i++)
+            if (rt_tex[i] == ids[k]) rt_tex[i--] = rt_tex[--nrt];
+    pthread_mutex_unlock(&rt_lock);
+    glDeleteTextures(S(0), ids);
 }
 
 /* Android's window surface is framebuffer 0; on iOS the platform supplies an FBO in its place. */
 static void h_glBindFramebuffer(NjCtx *c) {
     GLuint fb = U(1);
+    t_fb = fb;
+    if (fb != 0 && t_scaled) { /* offscreen rendering never uses the overlay inset */
+        t_scaled = 0;
+        apply_viewport();
+    }
     if (fb == 0) fb = nj_platform_default_framebuffer();
     glBindFramebuffer(U(0), fb);
 }
@@ -338,12 +512,20 @@ static const void *offset_or_pointer(NjCtx *c, int word, GLenum binding) {
 }
 
 static void h_glVertexAttribPointer(NjCtx *c) {
-    glVertexAttribPointer(U(0), S(1), U(2), B(3), S(4), offset_or_pointer(c, 5, GL_ARRAY_BUFFER_BINDING));
+    GLint bound = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &bound);
+    const void *p = offset_or_pointer(c, 5, GL_ARRAY_BUFFER_BINDING);
+    if (U(0) < 16) t_attr[U(0)] = (AttribArray){S(1), U(2), S(4), bound ? NULL : p};
+    glVertexAttribPointer(U(0), S(1), U(2), B(3), S(4), p);
 }
 
 static void h_glDrawElements(NjCtx *c) {
+    const void *idx = offset_or_pointer(c, 3, GL_ELEMENT_ARRAY_BUFFER_BINDING);
+    GLint ibo = 0;
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &ibo);
+    hud_before_draw(U(0), 0, S(1), U(2), ibo ? NULL : idx);
     if (dbg_drop(U(0), S(1))) return;
-    glDrawElements(U(0), S(1), U(2), offset_or_pointer(c, 3, GL_ELEMENT_ARRAY_BUFFER_BINDING));
+    glDrawElements(U(0), S(1), U(2), idx);
 }
 
 /* The guest's strings are joined and passed through nj_glsl_patch (NJ_GL_RAW_SHADERS=1 disables that). */

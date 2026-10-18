@@ -8,6 +8,7 @@
 #import "NJPlatformIOS.h"
 
 #include "boot.h"
+#include "nj/gles.h"
 
 @implementation GameViewController {
     EAGLContext *_ctx;
@@ -43,6 +44,50 @@
     if (_booted || self.view.bounds.size.width < self.view.bounds.size.height) return; /* wait for landscape */
     [self createFramebuffer];
     [self boot];
+    [self showCredit];
+}
+
+/* Credit for the port, shown over the publisher intro at launch. */
+- (void)showCredit {
+    UILabel *label = [[UILabel alloc] init];
+    label.text = @"iOS port by Miró Waltisberg";
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    label.layer.shadowColor = UIColor.blackColor.CGColor;
+    label.layer.shadowOpacity = 0.8;
+    label.layer.shadowRadius = 3;
+    label.layer.shadowOffset = CGSizeZero;
+    label.alpha = 0;
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:label];
+    [NSLayoutConstraint activateConstraints:@[
+        [label.centerXAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor],
+        [label.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-16],
+    ]];
+    [UIView animateWithDuration:0.6 delay:0.3 options:0 animations:^{ label.alpha = 1; } completion:^(BOOL done) {
+        [UIView animateWithDuration:1.0 delay:4.0 options:0 animations:^{ label.alpha = 0; }
+                         completion:^(BOOL d) { [label removeFromSuperview]; }];
+    }];
+}
+
+/* The game anchors its controls to the screen edges; shrink the in-game overlay towards the centre just enough
+ * to clear the safe area (rounded corners, camera cutout, home indicator). NJ_HUD_SCALE overrides. */
+- (void)updateHudScale {
+    UIEdgeInsets in = self.view.safeAreaInsets;
+    CGSize sz = self.view.bounds.size;
+    const CGFloat own_margin = 8; /* the game's controls keep about this much (points) from the edge */
+    CGFloat sx = 1 - 2 * MAX(MAX(in.left, in.right) - own_margin, 0) / sz.width;
+    CGFloat sy = 1 - 2 * MAX(MAX(in.top, in.bottom) - own_margin, 0) / sz.height;
+    CGFloat s = MAX(MIN(sx, sy), 0.8);
+    const char *env = getenv("NJ_HUD_SCALE");
+    if (env && atof(env) > 0) s = atof(env);
+    nj_gles_set_hud_scale((float)s, _w, _h);
+    NSLog(@"[ninjago] overlay scale %.3f (safe area %.0f/%.0f/%.0f/%.0f pt)", s, in.top, in.left, in.bottom, in.right);
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+    [super viewSafeAreaInsetsDidChange];
+    if (_w) [self updateHudScale];
 }
 
 - (void)createFramebuffer {
@@ -63,6 +108,7 @@
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, _depth);
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     NSLog(@"[ninjago] framebuffer %dx%d status 0x%x", _w, _h, st);
+    [self updateHudScale];
     nj_ios_set_main_context(_ctx, _fbo, _w, _h);
 }
 
@@ -84,6 +130,7 @@ static const char *env_or(const char *name, NSString *fallback) {
     cfg.height = _h;
     cfg.trace_path = getenv("NJ_TRACE");
     cfg.device_model = "iPhone18,3";
+    cfg.unlock_all_characters = true;
     static NjImage img;
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
     if (nj_boot(&cfg, &img) != 0) {
@@ -106,12 +153,13 @@ static const char *env_or(const char *name, NSString *fallback) {
     if (_paused) return;
     [EAGLContext setCurrentContext:_ctx];
     for (int i = 0; i < _ntaps; i++) {
-        if (_frameNo == _taps[i][0]) nj_touch(0, 0, (float)_taps[i][1], (float)_taps[i][2]);
-        if (_frameNo == _taps[i][0] + 4) nj_touch(2, 0, (float)_taps[i][1], (float)_taps[i][2]);
+        if (_frameNo == _taps[i][0]) nj_touch(NJ_TOUCH_FIRST_DOWN, 0, (float)_taps[i][1], (float)_taps[i][2]);
+        if (_frameNo == _taps[i][0] + 4) nj_touch(NJ_TOUCH_LAST_UP, 0, (float)_taps[i][1], (float)_taps[i][2]);
     }
     _frameNo++;
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
     glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
+    nj_gles_frame_begin();
     nj_frame();
     glBindRenderbuffer(GL_RENDERBUFFER, _color);
     [_ctx presentRenderbuffer:GL_RENDERBUFFER];
@@ -160,7 +208,24 @@ static const char *env_or(const char *name, NSString *fallback) {
 - (CGPoint)pixels:(UITouch *)t {
     CGPoint p = [t locationInView:self.view];
     CGFloat s = self.view.contentScaleFactor;
-    return CGPointMake(p.x * s, p.y * s);
+    p = CGPointMake(p.x * s, p.y * s);
+    if (nj_gles_hud_scaled()) { /* the overlay was drawn scaled towards the centre: map back into game pixels */
+        CGFloat k = nj_gles_hud_scale_factor(), cx = _w / 2.0, cy = _h / 2.0;
+        p = CGPointMake(cx + (p.x - cx) / k, cy + (p.y - cy) / k);
+    }
+    return p;
+}
+
+/* Android's order (GameGLSurfaceView.onTouchEvent): first finger -> gesture start; a further finger -> down,
+ * then a move for every finger; any movement -> a move for every finger; a finger lifting while others stay ->
+ * a move for every finger, then up; the last finger -> gesture end. */
+- (void)moveAll {
+    for (NSUInteger k = 0; k < _touches.count; k++) {
+        UITouch *t = _touches[k];
+        if ((id)t == NSNull.null) continue;
+        CGPoint p = [self pixels:t];
+        nj_touch(NJ_TOUCH_MOVE, (int)k, (float)p.x, (float)p.y);
+    }
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -169,18 +234,14 @@ static const char *env_or(const char *name, NSString *fallback) {
         BOOL first = [self activeCount] == 0;
         int pid = [self slotFor:t create:YES];
         CGPoint p = [self pixels:t];
-        nj_touch(first ? 0 : 4, pid, (float)p.x, (float)p.y);
+        nj_touch(first ? NJ_TOUCH_FIRST_DOWN : NJ_TOUCH_POINTER_DOWN, pid, (float)p.x, (float)p.y);
+        if (!first) [self moveAll];
     }
 }
 
 - (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     if (!_booted) return;
-    for (UITouch *t in touches) {
-        int pid = [self slotFor:t create:NO];
-        if (pid < 0) continue;
-        CGPoint p = [self pixels:t];
-        nj_touch(1, pid, (float)p.x, (float)p.y);
-    }
+    [self moveAll];
 }
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -189,15 +250,19 @@ static const char *env_or(const char *name, NSString *fallback) {
         int pid = [self slotFor:t create:NO];
         if (pid < 0) continue;
         CGPoint p = [self pixels:t];
-        BOOL last = [self activeCount] == 1;
-        nj_touch(last ? 2 : 5, pid, (float)p.x, (float)p.y);
+        if ([self activeCount] == 1) {
+            nj_touch(NJ_TOUCH_LAST_UP, pid, (float)p.x, (float)p.y);
+        } else {
+            [self moveAll];
+            nj_touch(NJ_TOUCH_POINTER_UP, pid, (float)p.x, (float)p.y);
+        }
         _touches[(NSUInteger)pid] = (id)NSNull.null;
     }
 }
 
 - (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     if (!_booted) return;
-    nj_touch(3, 0, 0, 0);
+    nj_touch(NJ_TOUCH_CANCEL, 0, 0, 0);
     [_touches removeAllObjects];
 }
 @end
