@@ -24,8 +24,8 @@ All are `static native`, so the JNI signature is `(JNIEnv*, jclass, …)`.
 | `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventDown` | `nativeTouchEventDown(int pointerId, float x, float y, float pressure)` | `(IFFF)V` |
 | `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventMove` | same | `(IFFF)V` |
 | `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventUp` | same | `(IFFF)V` |
-| `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventGestureStart` | same (2nd+ pointer down) | `(IFFF)V` |
-| `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventGestureEnd` | same (non-last pointer up) | `(IFFF)V` |
+| `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventGestureStart` | same (first pointer down) | `(IFFF)V` |
+| `Java_com_wbgames_LEGOgame_Fusion_nativeTouchEventGestureEnd` | same (last pointer up) | `(IFFF)V` |
 | `Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeColdBoot` | *(no Java declaration in this APK; never called)* | — |
 | `Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeDone` | `nativeDone()` (declared, never called) | `()V` |
 | `Java_com_wbgames_LEGOgame_GameGLSurfaceView_nativeInit` | `nativeInit(EGLConfig config, Activity activity)` | `(Ljavax/microedition/khronos/egl/EGLConfig;Landroid/app/Activity;)V` |
@@ -97,12 +97,18 @@ One `addOBBEntriesToFusion` call with all 33 entries `{fileName, dataOffset, siz
 `GameGLSurfaceView.onTouchEvent` runs on the **UI thread** and calls the native touch functions directly (not queued to
 the GL thread). Coordinates are `MotionEvent.getX/getY` in **view pixels** (origin top-left); `pressure` is
 `getPressure()` (≈1.0). Mapping of `getActionMasked()`:
-- `ACTION_DOWN` (0) → `nativeTouchEventDown(id, x, y, p)`
-- `ACTION_POINTER_DOWN` (5) → `nativeTouchEventGestureStart(id, x, y, p)` for the action pointer
+- `ACTION_DOWN` (0) → `nativeTouchEventGestureStart(id, x, y, p)` (the native side resets all touch state, then
+  records the finger as down)
+- `ACTION_POINTER_DOWN` (5) → `nativeTouchEventDown(id, x, y, p)` for the action pointer, then
+  `nativeTouchEventMove` for every pointer
 - `ACTION_MOVE` (2) → `nativeTouchEventMove` for every pointer
-- `ACTION_POINTER_UP` (6) → `nativeTouchEventGestureEnd` for the action pointer
-- `ACTION_UP` (1) → `nativeTouchEventUp`
+- `ACTION_POINTER_UP` (6) → `nativeTouchEventMove` for every pointer, then `nativeTouchEventUp` for the action pointer
+- `ACTION_UP` (1) → `nativeTouchEventGestureEnd` (the native side releases all touches)
 - `ACTION_CANCEL` (3) → `nativeTouchEventCancelAll()`
+
+An earlier version of this section had Down/Up and GestureStart/GestureEnd swapped. Delivering a second finger as
+GestureStart reset the first finger, which made the on-screen D-pad register a new swipe on every extra touch
+(fixed in the iOS app; `harness/boot.c` `nj_touch_native` and `tests/c/test_touch_map.c` follow this table).
 
 (The video view has a copy of this handler; it is irrelevant without FMVs.)
 
