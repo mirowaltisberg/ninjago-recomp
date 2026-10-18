@@ -1,5 +1,6 @@
 /* Name -> host function registry, thunk slots, data imports and guest-function overrides. */
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "nj/heap.h"
@@ -101,9 +102,26 @@ NjHleFn hle_fn_at(uint32_t thunk_ga, const char **name_out) {
 
 const char *hle_thunk_name(uint32_t index) { return index < thunk_count ? thunk_names[index] : NULL; }
 
+static FILE *trace_file;
+static pthread_mutex_t trace_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void hle_trace_open(const char *path) {
+    pthread_mutex_lock(&trace_lock);
+    if (trace_file) fclose(trace_file);
+    trace_file = path ? fopen(path, "w") : NULL;
+    pthread_mutex_unlock(&trace_lock);
+}
+
 void hle_dispatch(NjCtx *c, uint32_t thunk_ga) {
     const char *name;
     NjHleFn fn = hle_fn_at(thunk_ga, &name);
+    if (trace_file) {
+        pthread_mutex_lock(&trace_lock);
+        if (trace_file)
+            fprintf(trace_file, "%p %s %08x %08x %08x %08x\n", (void *)pthread_self(), name ? name : "?", c->r[0], c->r[1],
+                    c->r[2], c->r[3]);
+        pthread_mutex_unlock(&trace_lock);
+    }
     if (!fn) {
         if (name) nj_fatal("unimplemented import: %s", name);
         nj_fatal("call to invalid thunk address 0x%08x", thunk_ga);

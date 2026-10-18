@@ -25,6 +25,9 @@ const char *hle_thunk_name(uint32_t index);
 void hle_dispatch(NjCtx *c, uint32_t thunk_ga);
 static inline int hle_is_thunk(uint32_t ga) { return ga - NJ_THUNK_BASE < NJ_THUNK_SIZE; }
 
+/* Write one line per HLE call (thread, name, r0-r3) to path (NULL closes). */
+void hle_trace_open(const char *path);
+
 /* Data imports: name -> guest address written into GLOB_DAT slots. */
 void hle_register_data(const char *name, uint32_t ga);
 uint32_t hle_data_addr(const char *name);

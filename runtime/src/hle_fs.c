@@ -70,6 +70,25 @@ static void warn_unmapped(const char *gp) {
     fprintf(stderr, "[fs] guest path outside mapped prefixes: %s\n", gp);
 }
 
+#define MAX_SEEN 512
+static struct { char *path; unsigned n, ok; } opened[MAX_SEEN];
+static int nopened;
+
+static void note_open(const char *gp, int ok) {
+    pthread_mutex_lock(&fs_lock);
+    for (int i = 0; i < nopened; i++)
+        if (!strcmp(opened[i].path, gp)) { opened[i].n++; opened[i].ok += ok; pthread_mutex_unlock(&fs_lock); return; }
+    if (nopened < MAX_SEEN) { opened[nopened].path = strdup(gp); opened[nopened].n = 1; opened[nopened].ok = (unsigned)ok; nopened++; }
+    pthread_mutex_unlock(&fs_lock);
+}
+
+void nj_fs_report(FILE *out) {
+    pthread_mutex_lock(&fs_lock);
+    fprintf(out, "guest paths opened (%d unique):\n", nopened);
+    for (int i = 0; i < nopened; i++) fprintf(out, "  %5u x %-3s %s\n", opened[i].n, opened[i].ok ? "ok" : "ERR", opened[i].path);
+    pthread_mutex_unlock(&fs_lock);
+}
+
 /* Resolve guest path arg; on failure sets ENOENT and returns NULL. */
 static const char *host_path_or_enoent(uint32_t ga, char *buf, size_t cap) {
     const char *gp = hle_cstr(ga);
@@ -108,8 +127,9 @@ static FILE *file_arg(uint32_t gf) {
 static void hle_fopen(NjCtx *c) {
     char buf[1024];
     const char *h = host_path_or_enoent(A(0), buf, sizeof buf);
-    if (!h) { hle_ret(c, 0); return; }
+    if (!h) { note_open(hle_cstr(A(0)) ? hle_cstr(A(0)) : "(null)", 0); hle_ret(c, 0); return; }
     FILE *f = fopen(h, hle_cstr(A(1)));
+    note_open(hle_cstr(A(0)), f != NULL);
     if (!f) { set_host_errno(); hle_ret(c, 0); return; }
     uint32_t gf = nj_calloc(1, NJ_BIONIC_FILE_SIZE);
     pthread_mutex_lock(&fs_lock);
@@ -231,8 +251,9 @@ static int host_open_flags(uint32_t lf) {
 static void hle_open(NjCtx *c) {
     char buf[1024];
     const char *h = host_path_or_enoent(A(0), buf, sizeof buf);
-    if (!h) { hle_ret(c, (uint32_t)-1); return; }
+    if (!h) { note_open(hle_cstr(A(0)) ? hle_cstr(A(0)) : "(null)", 0); hle_ret(c, (uint32_t)-1); return; }
     int fd = open(h, host_open_flags(A(1)), (mode_t)(A(2) & 07777));
+    note_open(hle_cstr(A(0)), fd >= 0);
     if (fd < 0) set_host_errno();
     hle_ret(c, (uint32_t)fd);
 }

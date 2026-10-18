@@ -328,6 +328,7 @@ static void r_SetRate(NjCtx *c) {
 static void r_GetRate(NjCtx *c) { nj_w16(A(1), (uint16_t)obj_of(A(0))->rate_permille); hle_ret(c, 0); }
 static void r_GetCapabilitiesOfRate(NjCtx *c) { nj_w32(A(2), 0); hle_ret(c, 0); }
 static void r_GetRateRange(NjCtx *c) {
+    if (A(1) != 0) { hle_ret(c, SL_RESULT_PARAMETER_INVALID); return; } /* one range; callers enumerate */
     nj_w16(A(2), 500);
     nj_w16(A(3), 2000);
     if (hle_arg(c, 4)) nj_w16(hle_arg(c, 4), 0);

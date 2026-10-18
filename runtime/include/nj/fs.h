@@ -13,6 +13,9 @@ const char *nj_fs_host_path(const char *guest_path, char *buf, size_t cap);
 /* Host FILE* behind a guest FILE* (stdin/stdout/stderr for &__sF[0..2]); NULL if unknown. */
 FILE *nj_fs_host_file(uint32_t guest_file);
 
+/* Unique guest paths opened (fopen/open/stat), with counts and whether they resolved. */
+void nj_fs_report(FILE *out);
+
 /* fopen..fputs, fprintf, remove, mkdir, stat, open, close, mmap, munmap and data __sF. */
 void hle_fs_register(void);
 

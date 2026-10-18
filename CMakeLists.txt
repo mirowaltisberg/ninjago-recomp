@@ -17,3 +17,8 @@ set(NJ_GUEST_OBB "${CMAKE_SOURCE_DIR}/input/extracted/Android/Obb/com.lego.ninja
 enable_testing()
 add_subdirectory(runtime)
 add_subdirectory(tests)
+
+# Headless boot harness (Unicorn backend)
+add_executable(nj_headless_uc harness/headless_main.c harness/boot.c)
+target_include_directories(nj_headless_uc PRIVATE harness)
+target_link_libraries(nj_headless_uc PRIVATE nj_backend_uc nj_headless)

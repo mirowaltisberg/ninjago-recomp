@@ -268,3 +268,16 @@ NJ_TEST(sl_mp3_player_fd) {
     sl(p, OBJ_Destroy, 0, NULL);
     close(fd);
 }
+
+NJ_TEST(sl_rate_range_index_bounds) {
+    setup();
+    uint32_t p = pcm_player();
+    uint32_t rate = get_itf(p, "SL_IID_PLAYBACKRATE");
+    uint32_t mn = nj_calloc(1, 4), mx = nj_calloc(1, 4), st = nj_calloc(1, 4), caps = nj_calloc(1, 4);
+    uint32_t a0[] = {0, mn, mx, st, caps};
+    NJ_EQ_U(sl(rate, 5 /* GetRateRange */, 5, a0), 0);
+    NJ_CHECK((int16_t)nj_r16(mx) > (int16_t)nj_r16(mn));
+    uint32_t a1[] = {1, mn, mx, st, caps};
+    NJ_EQ_U(sl(rate, 5, 5, a1), 2); /* SL_RESULT_PARAMETER_INVALID: callers enumerate ranges until this */
+    sl(p, OBJ_Destroy, 0, NULL);
+}
