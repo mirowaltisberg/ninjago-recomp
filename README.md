@@ -111,6 +111,8 @@ The port has an options sheet (slider button in the corner). Every switch uses a
 already contains, including developer cheat bits whose setter is dead code in the release build. The full
 reverse-engineering trail is in [`docs/options.md`](docs/options.md).
 
+<p align="center"><img src="docs/media/menu.jpg" width="70%" alt="Main menu with the options button (top left) and the frame-rate display (top right)"></p>
+
 | Section | Options |
 |---|---|
 | Unlock | all characters (on by default), all levels, all super moves, all red-brick extras |
