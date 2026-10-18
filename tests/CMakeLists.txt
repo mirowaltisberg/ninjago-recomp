@@ -16,3 +16,4 @@ endfunction()
 
 nj_add_test(test_mem)
 nj_add_test(test_heap)
+nj_add_test(test_loader)
