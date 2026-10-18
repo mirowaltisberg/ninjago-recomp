@@ -130,7 +130,6 @@ static const char *env_or(const char *name, NSString *fallback) {
     cfg.height = _h;
     cfg.trace_path = getenv("NJ_TRACE");
     cfg.device_model = "iPhone18,3";
-    cfg.unlock_all_characters = true;
     static NjImage img;
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
     if (nj_boot(&cfg, &img) != 0) {

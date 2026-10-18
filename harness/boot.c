@@ -1,4 +1,5 @@
 #include "boot.h"
+#include "cheats.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,13 +30,6 @@
 #define VIEW "Java_com_wbgames_LEGOgame_GameGLSurfaceView_"
 
 static const NjImage *image;
-static uint32_t cheat_options; /* g_CheatOptions when unlock_all_characters is on, else 0 */
-
-/* Byte 0 bit 3 of the game's cheat options makes SaveGame_IsCharUnlocked/IsCharHubUnlocked/IsCharBought
- * report every character as unlocked and bought; nothing else reads it. Re-applied every frame. */
-static void apply_cheats(void) {
-    if (cheat_options) nj_w8(cheat_options, (uint8_t)(nj_r8(cheat_options) | 0x08));
-}
 static uint32_t cls_fusion, cls_view;
 
 static void mkdirs(const char *path) {
@@ -82,7 +76,7 @@ int nj_boot(const NjBootConfig *cfg, NjImage *img) {
     if (nj_mem_init() || nj_mem_map_fixed_regions() || nj_heap_init()) { fprintf(stderr, "boot: memory setup failed\n"); return -1; }
     if (nj_image_load(cfg->so_path, NJ_IMAGE_BASE, img)) { fprintf(stderr, "boot: cannot load %s\n", cfg->so_path); return -1; }
     image = img;
-    cheat_options = cfg->unlock_all_characters ? nj_image_sym(img, "g_CheatOptions") : 0;
+    nj_cheats_bind(img);
     if (cfg->fixed_clock) nj_time_set_fixed(true, 1500000000ull * 1000000ull, 1000);
     if (cfg->trace_path) hle_trace_open(cfg->trace_path);
 
@@ -156,7 +150,7 @@ int nj_boot(const NjBootConfig *cfg, NjImage *img) {
 }
 
 void nj_frame(void) {
-    apply_cheats();
+    nj_cheats_apply();
     nj_jni_call_native(image, VIEW "nativeRender", cls_view, "()V");
 }
 

@@ -9,7 +9,7 @@ SECS="${1:-25}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cmake -S "$ROOT" -B "$ROOT/build" -G Ninja > /dev/null && cmake --build "$ROOT/build" --target nj_guest_aot > /dev/null # gen/
 (cd "$ROOT/ios" && xcodegen generate --quiet)
-DEV=$(xcrun simctl list devices booted | grep -Eo '[0-9A-F-]{36}' | head -1)
+DEV="${SIM_DEVICE:-$(xcrun simctl list devices booted | grep -Eo '[0-9A-F-]{36}' | head -1)}" # SIM_DEVICE=<udid> picks one of several
 [ -n "$DEV" ] || { echo "no booted Simulator"; exit 1; }
 xcodebuild -project "$ROOT/ios/Ninjago.xcodeproj" -scheme Ninjago -sdk iphonesimulator -destination "id=$DEV" \
   -derivedDataPath "$ROOT/build/ios-dd" build > "$ROOT/build/ios-build.log" 2>&1 || { grep -E "error:" "$ROOT/build/ios-build.log" | head -20; exit 1; }

@@ -12,7 +12,6 @@ typedef struct {
     bool fixed_clock;
     const char *trace_path;
     const char *device_model; /* reported through nativeSetDeviceStrings */
-    bool unlock_all_characters; /* the game's own cheat bit: every character unlocked and bought */
 } NjBootConfig;
 
 /* Load, register HLE, bind imports, run constructors, then the onCreate/onResume/GL-thread sequence

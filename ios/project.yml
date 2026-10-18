@@ -39,6 +39,7 @@ targetTemplates:
       - path: ../build/gen
         compilerFlags: ["-Wno-unused-variable", "-Wno-unused-but-set-variable", "-Wno-unused-label"]
       - path: ../harness/boot.c
+      - path: ../harness/cheats.c
       - path: ../runtime/third_party/dlmalloc/malloc.c
         compilerFlags: ["-w", "-DONLY_MSPACES=1", "-DMSPACES=1", "-DUSE_LOCKS=1", "-DHAVE_MMAP=0", "-DHAVE_MORECORE=0"]
       - path: ../runtime/third_party/minimp3/minimp3_impl.c

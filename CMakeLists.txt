@@ -19,7 +19,7 @@ add_subdirectory(runtime)
 add_subdirectory(tests)
 
 # Headless boot harness (Unicorn backend)
-add_executable(nj_headless_uc harness/headless_main.c harness/boot.c)
+add_executable(nj_headless_uc harness/headless_main.c harness/boot.c harness/cheats.c)
 target_include_directories(nj_headless_uc PRIVATE harness)
 target_link_libraries(nj_headless_uc PRIVATE nj_backend_uc nj_headless)
 
@@ -59,7 +59,7 @@ if(EXISTS ${NJ_GUEST_SO})
   target_include_directories(nj_backend_aot PUBLIC ${CMAKE_SOURCE_DIR}/runtime/backend/aot)
   target_link_libraries(nj_backend_aot PUBLIC nj_runtime nj_guest_aot)
 
-  add_executable(nj_headless_aot harness/headless_main.c harness/boot.c)
+  add_executable(nj_headless_aot harness/headless_main.c harness/boot.c harness/cheats.c)
   target_include_directories(nj_headless_aot PRIVATE harness)
   target_link_libraries(nj_headless_aot PRIVATE nj_backend_aot nj_guest_aot nj_headless)
 
