@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds tests/c/NAME.c for the arm64 iOS Simulator (runtime + Unicorn backend) and runs it in the booted Simulator.
+# Builds tests/c/NAME.c (or NAME.m) for the arm64 iOS Simulator (runtime + Unicorn backend) and runs it in the booted Simulator.
 set -euo pipefail
 NAME="$1"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,7 +21,9 @@ for f in "$ROOT"/runtime/src/*.c "$ROOT/runtime/backend/unicorn/uc_backend.c" "$
   "${CC[@]}" -c "$f" -o "$OUT/obj/$b.o" "${INC[@]}" ${extra[@]+"${extra[@]}"}
 done
 ar rcs "$OUT/librt.a" "$OUT"/obj/*.o
-"${CC[@]}" -o "$OUT/$NAME" "$ROOT/tests/c/$NAME.c" "$ROOT/tests/c/nj_test_main.c" "${INC[@]}" \
+SRC="$ROOT/tests/c/$NAME.c"; objc=()
+[ -f "$ROOT/tests/c/$NAME.m" ] && { SRC="$ROOT/tests/c/$NAME.m"; objc=(-fobjc-arc); }
+"${CC[@]}" ${objc[@]+"${objc[@]}"} -o "$OUT/$NAME" "$SRC" "$ROOT/tests/c/nj_test_main.c" "${INC[@]}" \
   -DNJ_GUEST_SO_PATH="\"$ROOT/input/extracted/lib/armeabi-v7a/libLEGO_M1.so\"" \
   -DNJ_GUEST_OBB_PATH="\"$ROOT/input/extracted/Android/Obb/com.lego.ninjago.toe/main.1057.com.lego.ninjago.toe.obb\"" \
   "$OUT/librt.a" "$UC/lib/libunicorn.a" "$UC/lib/libarm-softmmu.a" "$UC/lib/libunicorn-common.a" \

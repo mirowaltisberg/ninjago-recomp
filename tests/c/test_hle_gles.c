@@ -51,6 +51,17 @@ NJ_TEST(gl_shader_source_arrays) {
     NJ_EQ_STR(gles_stub_last_shader_source(), "void main(){}");
 }
 
+NJ_TEST(gl_shader_source_is_patched_for_apple) {
+    setup();
+    uint32_t strs = nj_malloc(4);
+    nj_w32(strs, hle_guest_strdup("void main(){ normalize(vec3(0.0)); }"));
+    uint32_t w[] = {8, 1, strs, 0};
+    call("glShaderSource", w, 4);
+    const char *src = gles_stub_last_shader_source();
+    NJ_CHECK(strstr(src, "#define normalize nj_normalize") != NULL);
+    NJ_CHECK(strstr(src, "void main(){ normalize(vec3(0.0)); }") != NULL);
+}
+
 NJ_TEST(gl_attrib_client_pointer) {
     setup();
     uint32_t data = nj_malloc(64);

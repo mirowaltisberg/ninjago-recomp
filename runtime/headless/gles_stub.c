@@ -230,6 +230,7 @@ GLint glGetUniformLocation(GLuint p, const GLchar *n) { COUNT(); return location
 void glGetBufferParameteriv(GLenum t, GLenum p, GLint *v) { (void)t; (void)p; COUNT(); *v = 0; }
 GLenum glGetError(void) { COUNT(); return GL_NO_ERROR; }
 
+GLboolean glIsEnabled(GLenum cap) { (void)cap; COUNT(); return GL_FALSE; }
 void glGetIntegerv(GLenum p, GLint *v) {
     COUNT();
     switch (p) {
@@ -291,13 +292,7 @@ void glShaderSource(GLuint s, GLsizei count_, const GLchar *const *str, const GL
         pos += n;
     }
     last_source[pos] = 0;
-    const char *dir = getenv("NJ_SHADER_DUMP_DIR");
-    if (dir) {
-        char path[1024];
-        snprintf(path, sizeof path, "%s/shader_%04u.glsl", dir, s);
-        FILE *f = fopen(path, "w");
-        if (f) { fputs(last_source, f); fclose(f); }
-    }
+    (void)s;
 }
 
 void glStencilFunc(GLenum f, GLint r, GLuint m) { (void)f; (void)r; (void)m; COUNT(); }

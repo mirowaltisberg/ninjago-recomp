@@ -2,7 +2,8 @@
 # Builds the Simulator app (Unicorn backend), installs it in the booted Simulator and launches it with the game
 # files from input/. With SECONDS > 0: waits, saves build/sim-shot.png and stops the app.
 # With SECONDS = 0: leaves the game running to play with the mouse (open -a Simulator).
-# Optional NJ_TAPS="frame,x,y;frame,x,y" (pixels) injects taps (developer testing).
+# Optional NJ_TAPS="frame,x,y;frame,x,y" (pixels) injects taps (developer testing); other NJ_* variables are
+# passed to the app (see GameViewController.m and hle_gles.c).
 set -euo pipefail
 SECS="${1:-25}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -17,6 +18,8 @@ xcrun simctl terminate "$DEV" ch.mirowaltisberg.ninjago >/dev/null 2>&1 || true
 export SIMCTL_CHILD_NJ_SO="$ROOT/input/extracted/lib/armeabi-v7a/libLEGO_M1.so"
 export SIMCTL_CHILD_NJ_OBB="$ROOT/input/extracted/Android/Obb/com.lego.ninjago.toe/main.1057.com.lego.ninjago.toe.obb"
 export SIMCTL_CHILD_NJ_TAPS="${NJ_TAPS:-}"
+# pass other NJ_* developer switches (NJ_RENDER_SCALE, NJ_GL_SKIP, NJ_GL_STATS, NJ_SHADER_DUMP_DIR, NJ_TRACE) through
+for v in $(compgen -e | grep -E '^NJ_' | grep -vE '^NJ_(TAPS|SO|OBB)$'); do export "SIMCTL_CHILD_$v=${!v}"; done
 if [ "$SECS" = 0 ]; then
   xcrun simctl launch "$DEV" ch.mirowaltisberg.ninjago >/dev/null
   open "$(xcode-select -p)/Applications/Simulator.app"

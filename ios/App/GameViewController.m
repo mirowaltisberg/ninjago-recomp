@@ -16,13 +16,22 @@
     CADisplayLink *_link;
     BOOL _booted, _paused;
     long _frameNo;
+    CFAbsoluteTime _statT0, _statBusy; /* frame-rate log */
     int _taps[32][3], _ntaps; /* NJ_TAPS developer option: frame, x, y in pixels */
     NSMutableArray<UITouch *> *_touches; /* index = Android pointer id; NSNull marks a free slot */
 }
 
+/* The Simulator renders OpenGL ES in software, so it draws at 1 pixel per point there (9x fewer pixels than
+ * the iPhone 17's native 3x); NJ_RENDER_SCALE overrides. Touches are mapped with the same factor. */
 - (void)loadView {
     self.view = [[GameView alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.view.contentScaleFactor = UIScreen.mainScreen.nativeScale;
+    CGFloat scale = UIScreen.mainScreen.nativeScale;
+#if TARGET_OS_SIMULATOR
+    scale = 1.0;
+#endif
+    const char *env = getenv("NJ_RENDER_SCALE");
+    if (env && atof(env) > 0) scale = atof(env);
+    self.view.contentScaleFactor = scale;
 }
 
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -101,10 +110,19 @@ static const char *env_or(const char *name, NSString *fallback) {
         if (_frameNo == _taps[i][0] + 4) nj_touch(2, 0, (float)_taps[i][1], (float)_taps[i][2]);
     }
     _frameNo++;
+    CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
     glBindFramebuffer(GL_FRAMEBUFFER, _fbo);
     nj_frame();
     glBindRenderbuffer(GL_RENDERBUFFER, _color);
     [_ctx presentRenderbuffer:GL_RENDERBUFFER];
+    CFAbsoluteTime t1 = CFAbsoluteTimeGetCurrent();
+    _statBusy += t1 - t0;
+    if (!_statT0) _statT0 = t1;
+    if (_frameNo % 300 == 0) {
+        NSLog(@"[ninjago] %.1f fps, %.1f ms per frame (%dx%d)", 300 / (t1 - _statT0), _statBusy / 300 * 1000, _w, _h);
+        _statT0 = t1;
+        _statBusy = 0;
+    }
 }
 
 - (void)pauseGame {
