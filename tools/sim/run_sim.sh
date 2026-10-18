@@ -22,7 +22,7 @@ export SIMCTL_CHILD_NJ_TAPS="${NJ_TAPS:-}"
 for v in $(compgen -e | grep -E '^NJ_' | grep -vE '^NJ_(TAPS|SO|OBB)$'); do export "SIMCTL_CHILD_$v=${!v}"; done
 if [ "$SECS" = 0 ]; then
   xcrun simctl launch "$DEV" ch.mirowaltisberg.ninjago >/dev/null
-  open "$(xcode-select -p)/Applications/Simulator.app"
+  open "$(xcode-select -p)/Applications/Simulator.app" 2>/dev/null || open -a Simulator 2>/dev/null || true
   echo "running in the Simulator"
   exit 0
 fi
