@@ -36,6 +36,10 @@ void hle_bind_imports(const NjImage *img);
 
 /* Replace a guest function (by exported symbol name) with a host implementation. */
 void hle_register_override(const char *symbol, NjHleFn fn);
+/* Replace an unnamed guest function at image offset `offset` (its link-time address: the library is linked at 0,
+ * so this equals the address the recompiler tools print); `name` labels it in
+ * messages. Resolving checks that the image holds `expect` there (fatal otherwise). fn NULL unregisters. */
+void hle_register_override_code(uint32_t offset, const uint8_t *expect, uint32_t n, const char *name, NjHleFn fn);
 /* Resolve registered overrides against the image (fatal if a symbol is missing). */
 void hle_resolve_overrides(const NjImage *img);
 /* Override for a guest function address (Thumb bit ignored), NULL if none. */
