@@ -92,6 +92,26 @@ static inline uint32_t nj_shift(const NjCtx *c, int kind, uint32_t v, uint32_t a
     return nj_shift_c(kind, v, amount, &carry);
 }
 
+/* ---- AOT runtime (runtime/backend/aot/aot_dispatch.c) ---- */
+typedef void (*NjAotFn)(NjCtx *);
+typedef struct { uint32_t addr; NjAotFn fn; } NjAotEntry; /* guest address -> translated function */
+extern const NjAotEntry nj_aot_table[];                   /* generated dispatch.c, sorted by addr */
+extern const uint32_t nj_aot_count;
+NjAotFn nj_aot_lookup(uint32_t guest_addr);
+/* Call through a guest code pointer: HLE thunk, override (incl. Thumb helpers) or translated function;
+ * anything else is fatal, naming the address. */
+void nj_aot_call_indirect(NjCtx *c, uint32_t target);
+/* Host implementation of a guest import, resolved once per call site. */
+void (*nj_aot_import(const char *name))(NjCtx *);
+_Noreturn void nj_aot_bad_return(NjCtx *c, uint32_t fn, uint32_t got, uint32_t want);
+_Noreturn void nj_aot_untranslated(uint32_t fn, const char *what);
+
+#ifdef NJ_AOT_CHECKS
+#define NJ_RET(target, fn) do { if ((target) != entry_lr) nj_aot_bad_return(c, fn, target, entry_lr); return; } while (0)
+#else
+#define NJ_RET(target, fn) return
+#endif
+
 /* ---- VFP (FPSCR control bits are 0 on Android: round to nearest, no flush-to-zero, no default NaN) ---- */
 static inline float nj_sf(const NjCtx *c, int n) {
     uint32_t b = nj_get_s(c, n);

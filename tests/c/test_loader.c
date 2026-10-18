@@ -78,3 +78,9 @@ NJ_TEST(loader_missing_file) {
     NjImage other;
     NJ_CHECK(nj_image_load("/nonexistent/lib.so", NJ_IMAGE_BASE, &other) != 0);
 }
+
+NJ_TEST(loader_writable_segment) {
+    load();
+    NJ_EQ_U(img.rw_ga, NJ_IMAGE_BASE + 0x42c438u);
+    NJ_EQ_U(img.rw_size, 0x11d744u);
+}

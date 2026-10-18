@@ -16,6 +16,7 @@ typedef struct NjSymbol NjSymbol;
 
 typedef struct NjImage {
     uint32_t base, size;              /* guest load base and mapped size */
+    uint32_t rw_ga, rw_size;          /* the writable PT_LOAD (data + bss), for snapshots */
     uint32_t init_array_ga, init_count;
     uint32_t fini_array_ga, fini_count;
     uint32_t exidx_ga, exidx_count;   /* PT_ARM_EXIDX (8-byte entries) */

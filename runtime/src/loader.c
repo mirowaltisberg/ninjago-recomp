@@ -79,6 +79,11 @@ static int load_segments(const uint8_t *file, size_t len, const Elf32_Phdr *ph, 
     if (lo != 0 || hi == 0) return -1;
     img->base = base;
     img->size = hi;
+    for (int i = 0; i < phnum; i++)
+        if (ph[i].p_type == PT_LOAD && (ph[i].p_flags & PF_W)) {
+            img->rw_ga = base + ph[i].p_vaddr;
+            img->rw_size = ph[i].p_memsz;
+        }
     if (nj_mem_map(base, hi, NJ_PROT_R | NJ_PROT_W)) return -1;
     for (int i = 0; i < phnum; i++) {
         if (ph[i].p_type != PT_LOAD) continue;

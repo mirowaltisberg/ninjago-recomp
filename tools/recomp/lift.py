@@ -45,9 +45,10 @@ def u32(v):
 class _Insn:
     """Per-instruction lifting helpers."""
 
-    def __init__(self, ci, lc):
+    def __init__(self, ci, lc, pc_var=None):
         self.ci = ci
         self.lc = lc
+        self.pc_var = pc_var  # C variable receiving a loaded pc (returns), None: pc writes are Unsupported
         self.word = int.from_bytes(ci.bytes, "little")
         # S bit of data-processing and multiply encodings (capstone's update_flags is wrong for sbc)
         self.s = bool(self.word >> 20 & 1)
@@ -335,10 +336,10 @@ def lift_single(ins):
     out, upd = _index_and_writeback(ins, off)
     byte, load = w >> 22 & 1, w >> 20 & 1
     if load:
-        if t == 15:
+        if t == 15 and (ins.pc_var is None or byte):
             ins.unsupported("writes pc")
         out.append(f"uint32_t v = {'nj_r8(addr)' if byte else 'nj_r32(addr)'};")
-        return out + upd + [f"c->r[{t}] = v;"]
+        return out + upd + [f"{ins.pc_var if t == 15 else f'c->r[{t}]'} = v;"]
     v = _reg(ins, t)
     out.append(f"nj_w8(addr, (uint8_t){v});" if byte else f"nj_w32(addr, {v});")
     return out + upd
@@ -383,7 +384,7 @@ def lift_block(ins):
     regs = [r for r in range(16) if w >> r & 1]
     if s_bit or not regs or n == 15:
         ins.unsupported("user-bank or empty transfer")
-    if load and 15 in regs:
+    if load and 15 in regs and ins.pc_var is None:
         ins.unsupported("writes pc")
     count = len(regs)
     first = {(0, 1): 0, (1, 1): 4, (0, 0): 4 - 4 * count, (1, 0): -4 * count}[(p, up)]
@@ -392,7 +393,7 @@ def lift_block(ins):
         out += [f"uint32_t v{i} = nj_r32(base + {u32(first + 4 * i)});" for i in range(count)]
         if wb and n not in regs:  # with the base in the list the loaded value wins
             out.append(f"c->r[{n}] = base {'+' if up else '-'} {4 * count}u;")
-        out += [f"c->r[{r}] = v{i};" for i, r in enumerate(regs)]
+        out += [f"{ins.pc_var if r == 15 else f'c->r[{r}]'} = v{i};" for i, r in enumerate(regs)]
         return out
     for i, r in enumerate(regs):
         v = "base" if r == n else _reg(ins, r)
@@ -633,11 +634,18 @@ HANDLERS = {
 } | {getattr(arm, "ARM_INS_" + n): lift_mem for n in MEM_IDS if hasattr(arm, "ARM_INS_" + n)} | VFP_HANDLERS
 
 
-def lift_insn(ci, lc):
-    """C statements for one capstone ARM instruction (detail mode)."""
+def lift_body(ci, lc, pc_var=None):
+    """C statements for one instruction, without its condition. With pc_var, a load into pc assigns it there."""
     handler = HANDLERS.get(ci.id)
     if handler is None:
         raise Unsupported(ci.mnemonic, ci.op_str)
-    body = ["    " + s for s in handler(_Insn(ci, lc))]
-    head = f"if (NJ_COND_{COND[ci.cc]}(c)) {{" if ci.cc in COND else "{"
-    return [head] + body + ["}"]
+    return handler(_Insn(ci, lc, pc_var))
+
+
+def cond_head(ci):
+    return f"if (NJ_COND_{COND[ci.cc]}(c)) {{" if ci.cc in COND else "{"
+
+
+def lift_insn(ci, lc):
+    """C statements for one capstone ARM instruction (detail mode), wrapped in its condition."""
+    return [cond_head(ci)] + ["    " + s for s in lift_body(ci, lc)] + ["}"]
