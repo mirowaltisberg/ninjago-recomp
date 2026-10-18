@@ -59,7 +59,7 @@ static void random_state(NjCtx *c, const NjCase *k) {
     for (int i = 0; i < 15; i++) c->r[i] = (uint32_t)rnd();
     for (int i = 0; i < 15; i++) {
         if (k->mem_regs >> i & 1) c->r[i] = SCRATCH + 0x4000 + ((uint32_t)rnd() % 0x8000 & ~7u);
-        if (k->idx_regs >> i & 1) c->r[i] = (uint32_t)(rnd() & 0x3f) << 2;
+        if (k->idx_regs >> i & 1) c->r[i] = (uint32_t)(rnd() & 0x1f) << 2; /* small: indexes may be shifted by up to 7 */
     }
     c->r[13] = SCRATCH + 0x8000 + ((uint32_t)rnd() % 0x2000 & ~7u);
     uint32_t f = (uint32_t)rnd();

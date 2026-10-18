@@ -291,6 +291,132 @@ def lift_bitfield(ins):
     return [f"{ins.dest(rd.reg)} = (uint32_t)((int32_t)({v} << {32 - lsb - width}) >> {32 - width});"]
 
 
+# ---- loads and stores (addressing decoded from the encoding; capstone's operand details are inconsistent) ----
+
+SHIFT_TYPE = ("NJ_LSL", "NJ_LSR", "NJ_ASR", "NJ_ROR")
+
+
+def _reg(ins, n):
+    return u32(ins.lc.base + ins.ci.address + 8) if n == 15 else f"c->r[{n}]"
+
+
+def _writeback(ins, n):
+    if n == 15:
+        ins.unsupported("writeback to pc")
+    return f"c->r[{n}]"
+
+
+def _index_and_writeback(ins, off):
+    """Address and write-back statements for P/U/W addressing with offset expression `off`."""
+    w = ins.word
+    p, up, wb = w >> 24 & 1, w >> 23 & 1, w >> 21 & 1
+    n = w >> 16 & 15
+    sign = "+" if up else "-"
+    out = [f"uint32_t base = {_reg(ins, n)};", f"uint32_t off = {off};",
+           f"uint32_t addr = {'base ' + sign + ' off' if p else 'base'};"]
+    upd = [f"{_writeback(ins, n)} = base {sign} off;"] if (wb or not p) else []
+    return out, upd
+
+
+def lift_single(ins):
+    """ldr/str/ldrb/strb (and the user-mode t variants, which behave the same here)."""
+    w = ins.word
+    t = w >> 12 & 15
+    if w >> 25 & 1:  # register offset with immediate shift
+        imm5, typ = w >> 7 & 31, w >> 5 & 3
+        rm = _reg(ins, w & 15)
+        if typ == 3 and imm5 == 0:
+            off = f"nj_shift(c, NJ_RRX, {rm}, 1)"
+        else:
+            amount = 32 if imm5 == 0 and typ in (1, 2) else imm5
+            off = rm if amount == 0 else f"nj_shift(c, {SHIFT_TYPE[typ]}, {rm}, {amount})"
+    else:
+        off = u32(w & 0xFFF)
+    out, upd = _index_and_writeback(ins, off)
+    byte, load = w >> 22 & 1, w >> 20 & 1
+    if load:
+        if t == 15:
+            ins.unsupported("writes pc")
+        out.append(f"uint32_t v = {'nj_r8(addr)' if byte else 'nj_r32(addr)'};")
+        return out + upd + [f"c->r[{t}] = v;"]
+    v = _reg(ins, t)
+    out.append(f"nj_w8(addr, (uint8_t){v});" if byte else f"nj_w32(addr, {v});")
+    return out + upd
+
+
+def lift_extra(ins):
+    """ldrh/strh/ldrsb/ldrsh/ldrd/strd."""
+    w = ins.word
+    t = w >> 12 & 15
+    off = u32((w >> 4 & 0xF0) | (w & 0xF)) if w >> 22 & 1 else _reg(ins, w & 15)
+    out, upd = _index_and_writeback(ins, off)
+    op2, load = w >> 5 & 3, w >> 20 & 1
+    if load and op2 == 1:
+        kind = "ldrh"
+    elif load:
+        kind = "ldrsb" if op2 == 2 else "ldrsh"
+    else:
+        kind = "strh" if op2 == 1 else ("ldrd" if op2 == 2 else "strd")
+    if kind in ("ldrd", "strd") and (t & 1 or t == 14):
+        ins.unsupported("odd register pair")
+    if t == 15 or (kind == "ldrd" and t + 1 == 15):
+        ins.unsupported("writes pc")
+    if kind == "ldrh":
+        return out + ["uint32_t v = nj_r16(addr);"] + upd + [f"c->r[{t}] = v;"]
+    if kind == "ldrsb":
+        return out + ["uint32_t v = (uint32_t)(int32_t)(int8_t)nj_r8(addr);"] + upd + [f"c->r[{t}] = v;"]
+    if kind == "ldrsh":
+        return out + ["uint32_t v = (uint32_t)(int32_t)(int16_t)nj_r16(addr);"] + upd + [f"c->r[{t}] = v;"]
+    if kind == "strh":
+        return out + [f"nj_w16(addr, (uint16_t){_reg(ins, t)});"] + upd
+    if kind == "ldrd":
+        return out + ["uint32_t v0 = nj_r32(addr), v1 = nj_r32(addr + 4);"] + upd + [
+            f"c->r[{t}] = v0;", f"c->r[{t + 1}] = v1;"]
+    return out + [f"nj_w32(addr, {_reg(ins, t)});", f"nj_w32(addr + 4, {_reg(ins, t + 1)});"] + upd
+
+
+def lift_block(ins):
+    """ldm/stm in all four modes (push/pop included); registers in ascending order at ascending addresses."""
+    w = ins.word
+    p, up, s_bit, wb, load = w >> 24 & 1, w >> 23 & 1, w >> 22 & 1, w >> 21 & 1, w >> 20 & 1
+    n = w >> 16 & 15
+    regs = [r for r in range(16) if w >> r & 1]
+    if s_bit or not regs or n == 15:
+        ins.unsupported("user-bank or empty transfer")
+    if load and 15 in regs:
+        ins.unsupported("writes pc")
+    count = len(regs)
+    first = {(0, 1): 0, (1, 1): 4, (0, 0): 4 - 4 * count, (1, 0): -4 * count}[(p, up)]
+    out = [f"uint32_t base = c->r[{n}];"]
+    if load:
+        out += [f"uint32_t v{i} = nj_r32(base + {u32(first + 4 * i)});" for i in range(count)]
+        if wb and n not in regs:  # with the base in the list the loaded value wins
+            out.append(f"c->r[{n}] = base {'+' if up else '-'} {4 * count}u;")
+        out += [f"c->r[{r}] = v{i};" for i, r in enumerate(regs)]
+        return out
+    for i, r in enumerate(regs):
+        v = "base" if r == n else _reg(ins, r)
+        out.append(f"nj_w32(base + {u32(first + 4 * i)}, {v});")
+    if wb:
+        out.append(f"c->r[{n}] = base {'+' if up else '-'} {4 * count}u;")
+    return out
+
+
+def lift_mem(ins):
+    w = ins.word
+    if w >> 26 & 3 == 1:
+        return lift_single(ins)
+    if w >> 25 & 7 == 4:
+        return lift_block(ins)
+    if w >> 25 & 7 == 0 and w >> 7 & 1 and w >> 4 & 1 and w >> 5 & 3:
+        return lift_extra(ins)
+    ins.unsupported("memory encoding")
+
+
+MEM_IDS = ("LDR", "LDRB", "LDRT", "LDRBT", "STR", "STRB", "STRT", "STRBT", "LDRH", "STRH", "LDRSB", "LDRSH",
+           "LDRD", "STRD", "LDM", "LDMIB", "LDMDA", "LDMDB", "STM", "STMIB", "STMDA", "STMDB", "PUSH", "POP")
+
+
 HANDLERS = {
     arm.ARM_INS_MOV: lift_mov, arm.ARM_INS_MVN: lift_mov,
     arm.ARM_INS_AND: lift_logic, arm.ARM_INS_ORR: lift_logic, arm.ARM_INS_EOR: lift_logic,
@@ -313,7 +439,7 @@ HANDLERS = {
     arm.ARM_INS_SXTAB: lift_extend, arm.ARM_INS_SXTAH: lift_extend,
     arm.ARM_INS_BFI: lift_bitfield, arm.ARM_INS_BFC: lift_bitfield, arm.ARM_INS_UBFX: lift_bitfield,
     arm.ARM_INS_SBFX: lift_bitfield,
-}
+} | {getattr(arm, "ARM_INS_" + n): lift_mem for n in MEM_IDS if hasattr(arm, "ARM_INS_" + n)}
 
 
 def lift_insn(ci, lc):
