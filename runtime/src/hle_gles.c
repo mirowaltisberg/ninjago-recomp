@@ -14,6 +14,7 @@
 
 #include "nj/gles.h"
 #include "nj/hle.h"
+#include "nj/platform.h"
 #include "nj/texture.h"
 
 #if TARGET_OS_IPHONE
@@ -35,7 +36,6 @@ bool nj_gles_decode_atc = false;
 THUNK(glActiveTexture, U(0))
 THUNK(glAttachShader, U(0), U(1))
 THUNK(glBindBuffer, U(0), U(1))
-THUNK(glBindFramebuffer, U(0), U(1))
 THUNK(glBindRenderbuffer, U(0), U(1))
 THUNK(glBindTexture, U(0), U(1))
 THUNK(glBlendEquation, U(0))
@@ -76,7 +76,6 @@ THUNK(glGetActiveUniform, U(0), U(1), S(2), P(3), P(4), P(5), P(6))
 RET(glGetAttribLocation, U(0), P(1))
 THUNK(glGetBufferParameteriv, U(0), U(1), P(2))
 RET(glGetError)
-THUNK(glGetIntegerv, U(0), P(1))
 THUNK(glGetProgramInfoLog, U(0), S(1), P(2), P(3))
 THUNK(glGetProgramiv, U(0), U(1), P(2))
 THUNK(glGetShaderInfoLog, U(0), S(1), P(2), P(3))
@@ -101,6 +100,23 @@ THUNK(glViewport, S(0), S(1), S(2), S(3))
 THUNK(glGenVertexArraysOES, S(0), P(1))
 THUNK(glBindVertexArrayOES, U(0))
 THUNK(glDeleteVertexArraysOES, S(0), P(1))
+
+/* Android's window surface is framebuffer 0; on iOS the platform supplies an FBO in its place. */
+static void h_glBindFramebuffer(NjCtx *c) {
+    GLuint fb = U(1);
+    if (fb == 0) fb = nj_platform_default_framebuffer();
+    glBindFramebuffer(U(0), fb);
+}
+
+static void h_glGetIntegerv(NjCtx *c) {
+    GLenum pname = U(0);
+    GLint *out = P(1);
+    glGetIntegerv(pname, out);
+    if (pname == GL_FRAMEBUFFER_BINDING && out) {
+        GLuint def = nj_platform_default_framebuffer();
+        if (def && (GLuint)*out == def) *out = 0;
+    }
+}
 
 /* iOS GPUs have no ATC: decode those uploads to RGBA8. */
 static void h_glCompressedTexImage2D(NjCtx *c) {

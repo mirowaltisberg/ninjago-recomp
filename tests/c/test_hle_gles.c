@@ -161,3 +161,26 @@ NJ_TEST(gl_atc_decoded_to_rgba) {
     NJ_EQ_U(gles_stub_compressed_format_count(0x8C92), before_c);
     NJ_EQ_U(gles_stub_teximage_count(0x1908, 0x1401), before_t + 1);
 }
+
+#include <GLES2/gl2.h>
+
+void nj_headless_set_default_framebuffer(unsigned fbo);
+
+NJ_TEST(gl_default_framebuffer_mapping) {
+    setup();
+    nj_headless_set_default_framebuffer(77);
+    uint32_t w0[] = {GL_FRAMEBUFFER, 0};
+    call("glBindFramebuffer", w0, 2);
+    GLint host = -1;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &host); /* what the host GL really has bound */
+    NJ_EQ_U(host, 77);
+    uint32_t out = nj_malloc(4);
+    uint32_t wq[] = {GL_FRAMEBUFFER_BINDING, out};
+    call("glGetIntegerv", wq, 2);
+    NJ_EQ_U(nj_r32(out), 0); /* the guest sees "the default framebuffer" */
+    uint32_t w5[] = {GL_FRAMEBUFFER, 5};
+    call("glBindFramebuffer", w5, 2);
+    call("glGetIntegerv", wq, 2);
+    NJ_EQ_U(nj_r32(out), 5);
+    nj_headless_set_default_framebuffer(0);
+}

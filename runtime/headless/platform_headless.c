@@ -6,6 +6,10 @@
 static int next_ctx = 2;
 static int width = 1920, height = 1080;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned default_fbo;
+
+void nj_headless_set_default_framebuffer(unsigned fbo) { default_fbo = fbo; }
+unsigned nj_platform_default_framebuffer(void) { return default_fbo; }
 
 void nj_headless_set_size(int w, int h) { width = w; height = h; }
 
