@@ -9,10 +9,10 @@ target_compile_definitions(nj_test_main PUBLIC
 function(nj_add_test name)
   cmake_parse_arguments(T "" "" "LIBS" ${ARGN})
   add_executable(${name} c/${name}.c)
-  # Whole-archive so NJ_TEST constructors in the test file and runtime registrations are kept.
   target_link_libraries(${name} PRIVATE nj_test_main ${T_LIBS})
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77)
 endfunction()
 
 nj_add_test(test_mem)
+nj_add_test(test_heap)

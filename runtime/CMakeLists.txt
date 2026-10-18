@@ -1,6 +1,11 @@
 file(GLOB NJ_RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
 
-add_library(nj_runtime STATIC ${NJ_RUNTIME_SOURCES})
+set(NJ_DLMALLOC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/dlmalloc/malloc.c)
+set_source_files_properties(${NJ_DLMALLOC} PROPERTIES
+  COMPILE_OPTIONS "-w"
+  COMPILE_DEFINITIONS "ONLY_MSPACES=1;MSPACES=1;USE_LOCKS=1;HAVE_MMAP=0;HAVE_MORECORE=0;FOOTERS=0;INSECURE=0")
+
+add_library(nj_runtime STATIC ${NJ_RUNTIME_SOURCES} ${NJ_DLMALLOC})
 target_include_directories(nj_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(nj_runtime PUBLIC Threads::Threads)
