@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include <pthread.h>
 #include <math.h>
 #include <unistd.h>
 
@@ -280,4 +281,69 @@ NJ_TEST(sl_rate_range_index_bounds) {
     uint32_t a1[] = {1, mn, mx, st, caps};
     NJ_EQ_U(sl(rate, 5, 5, a1), 2); /* SL_RESULT_PARAMETER_INVALID: callers enumerate ranges until this */
     sl(p, OBJ_Destroy, 0, NULL);
+}
+
+NJ_TEST(sl_stale_interface_is_fatal) {
+    setup();
+    uint32_t a = pcm_player();
+    uint32_t stale_vol = get_itf(a, "SL_IID_VOLUME");
+    sl(a, OBJ_Destroy, 0, NULL);
+    uint32_t b = pcm_player(); /* reuses a's slot */
+    uint32_t out = nj_calloc(1, 4);
+    uint32_t args[] = {out};
+    NJ_EXPECT_FATAL(sl(stale_vol, VOL_GetVolumeLevel, 1, args), "destroyed");
+    sl(b, OBJ_Destroy, 0, NULL);
+}
+
+#define FN_CALL_CTX (PAGE + 0x40) /* callback(caller, ctx): calls the function whose address is stored at *ctx */
+
+static volatile int blk_entered, blk_release, blk_done;
+static void t_block(NjCtx *c) {
+    __atomic_add_fetch(&blk_entered, 1, __ATOMIC_SEQ_CST);
+    while (!__atomic_load_n(&blk_release, __ATOMIC_SEQ_CST)) usleep(1000);
+    usleep(20000); /* still running when Destroy is called */
+    __atomic_add_fetch(&blk_done, 1, __ATOMIC_SEQ_CST);
+    (void)c;
+}
+static void *release_soon(void *ud) {
+    (void)ud;
+    usleep(30000);
+    __atomic_store_n(&blk_release, 1, __ATOMIC_SEQ_CST);
+    return NULL;
+}
+
+NJ_TEST(sl_destroy_waits_and_drops_pending_callbacks) {
+    setup();
+    const uint32_t code[] = {0xE5913000, 0xE92D4000, 0xE12FFF33, 0xE8BD8000}; /* ldr r3,[r1]; push {lr}; blx r3; pop {pc} */
+    for (int i = 0; i < 4; i++) nj_w32(FN_CALL_CTX + 4u * (uint32_t)i, code[i]);
+    hle_register("t_block", t_block);
+    uint32_t ctx = nj_calloc(1, 4);
+    nj_w32(ctx, hle_thunk("t_block"));
+    uint32_t p = pcm_player();
+    uint32_t bq = get_itf(p, "SL_IID_ANDROIDSIMPLEBUFFERQUEUE"), play = get_itf(p, "SL_IID_PLAY");
+    uint32_t a1[] = {FN_CALL_CTX, ctx};
+    NJ_EQ_U(sl(bq, BQ_RegisterCallback, 2, a1), 0);
+    uint32_t bytes = 441 * 4;
+    for (int i = 0; i < 2; i++) {
+        uint32_t a2[] = {nj_calloc(1, bytes), bytes};
+        NJ_EQ_U(sl(bq, BQ_Enqueue, 2, a2), 0);
+    }
+    uint32_t a3[] = {3};
+    NJ_EQ_U(sl(play, PLAY_SetPlayState, 1, a3), 0);
+    uint32_t state = nj_calloc(1, 8);
+    uint32_t a4[] = {state};
+    for (int i = 0; i < 200; i++) { /* first callback running, second buffer consumed (its callback queued) */
+        sl(bq, BQ_GetState, 1, a4);
+        if (blk_entered == 1 && nj_r32(state) == 0) break;
+        usleep(5000);
+    }
+    NJ_EQ_U(blk_entered, 1);
+    NJ_EQ_U(nj_r32(state), 0);
+    pthread_t t;
+    pthread_create(&t, NULL, release_soon, NULL);
+    sl(p, OBJ_Destroy, 0, NULL);
+    NJ_EQ_U(blk_done, 1); /* Destroy returned only after the running callback finished */
+    pthread_join(t, NULL);
+    usleep(100000);
+    NJ_EQ_U(blk_entered, 1); /* the queued callback was never delivered */
 }

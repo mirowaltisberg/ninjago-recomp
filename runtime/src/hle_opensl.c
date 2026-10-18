@@ -55,6 +55,7 @@ enum { T_ENGINE = 1, T_MIX, T_PLAYER };
 
 typedef struct {
     int used, type, state;
+    uint32_t gen;                /* bumped per creation; interfaces carry it so stale handles are caught */
     uint32_t self;               /* SLObjectItf */
     uint32_t itf[I_COUNT];       /* interface addresses (0 = not offered) */
     int stream, is_bq;
@@ -68,16 +69,25 @@ static Obj objs[MAX_OBJS];
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t vt_object, vt_itf[I_COUNT];
 
-static Obj *obj_of(uint32_t itf_ga) {
-    uint32_t id = nj_r32(itf_ga + 4);
-    if (id >= MAX_OBJS || !objs[id].used) nj_fatal("OpenSL call on a destroyed or invalid object 0x%08x", itf_ga);
-    return &objs[id];
+/* An interface's second word is its object's tag: slot index in the low 8 bits, generation above. */
+static uint32_t next_gen;
+static uint32_t tag_of(const Obj *o) { return o->gen << 8 | (uint32_t)(o - objs); }
+
+static Obj *obj_by_tag(uint32_t tag) {
+    uint32_t id = tag & 0xff;
+    return objs[id].used && objs[id].gen == tag >> 8 ? &objs[id] : NULL;
 }
 
-static uint32_t make_itf(uint32_t vtable, uint32_t id) {
+static Obj *obj_of(uint32_t itf_ga) {
+    Obj *o = obj_by_tag(nj_r32(itf_ga + 4));
+    if (!o) nj_fatal("OpenSL call on a destroyed or invalid object 0x%08x", itf_ga);
+    return o;
+}
+
+static uint32_t make_itf(uint32_t vtable, const Obj *o) {
     uint32_t ga = hle_data_alloc(8, 4);
     nj_w32(ga, vtable);
-    nj_w32(ga + 4, id);
+    nj_w32(ga + 4, tag_of(o));
     return ga;
 }
 
@@ -94,22 +104,27 @@ static Obj *new_obj(int type) {
     o->stream = -1;
     o->play_state = SL_PLAYSTATE_STOPPED;
     o->rate_permille = 1000;
+    o->gen = ++next_gen & 0xffffff;
     pthread_mutex_unlock(&lock);
-    o->self = make_itf(vt_object, id);
+    o->self = make_itf(vt_object, o);
     return o;
 }
 
 /* ---- callback pump ---- */
 
-typedef struct Ev { uint32_t fn, argc, args[3]; struct Ev *next; } Ev;
+/* Lock order: lock, then ev_lock. Destroy drops an object's queued events and, like Android, waits for
+ * its running callback unless called from that callback. */
+typedef struct Ev { int obj; uint32_t fn, argc, args[3]; struct Ev *next; } Ev;
 static Ev *ev_head, *ev_tail;
 static pthread_mutex_t ev_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t ev_cv = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t ev_cv = PTHREAD_COND_INITIALIZER, ev_done_cv = PTHREAD_COND_INITIALIZER;
 static pthread_once_t pump_once = PTHREAD_ONCE_INIT;
+static int running_obj = -1;
+static _Thread_local int on_pump;
 
-static void post(uint32_t fn, uint32_t argc, uint32_t a0, uint32_t a1, uint32_t a2) {
+static void post(int obj, uint32_t fn, uint32_t argc, uint32_t a0, uint32_t a1, uint32_t a2) {
     Ev *e = malloc(sizeof *e);
-    *e = (Ev){fn, argc, {a0, a1, a2}, NULL};
+    *e = (Ev){obj, fn, argc, {a0, a1, a2}, NULL};
     pthread_mutex_lock(&ev_lock);
     if (ev_tail) ev_tail->next = e;
     else ev_head = e;
@@ -119,31 +134,53 @@ static void post(uint32_t fn, uint32_t argc, uint32_t a0, uint32_t a1, uint32_t 
 }
 
 static void hle_pump(NjCtx *c) {
+    on_pump = 1;
     for (;;) {
         pthread_mutex_lock(&ev_lock);
         while (!ev_head) pthread_cond_wait(&ev_cv, &ev_lock);
         Ev *e = ev_head;
         ev_head = e->next;
         if (!ev_head) ev_tail = NULL;
+        running_obj = e->obj;
         pthread_mutex_unlock(&ev_lock);
         nj_call(c, e->fn, (int)e->argc, e->args);
+        pthread_mutex_lock(&ev_lock);
+        running_obj = -1;
+        pthread_cond_broadcast(&ev_done_cv);
+        pthread_mutex_unlock(&ev_lock);
         free(e);
     }
+}
+
+/* Caller holds ev_lock. */
+static void drop_events(int obj) {
+    Ev **pp = &ev_head, *last = NULL;
+    while (*pp) {
+        Ev *e = *pp;
+        if (e->obj == obj) { *pp = e->next; free(e); }
+        else { last = e; pp = &e->next; }
+    }
+    ev_tail = last;
 }
 
 static void start_pump(void) {
     if (nj_spawn_thread(hle_thunk("__nj_sl_pump"), 0, NULL, NULL)) nj_fatal("cannot start the OpenSL callback thread");
 }
 
+/* Mixer callbacks; ud is the object's tag. */
 static void bq_consumed(void *ud) {
-    Obj *o = ud;
-    if (o->used && o->bq_cb) post(o->bq_cb, 2, o->itf[I_BQ], o->bq_ctx, 0);
+    pthread_mutex_lock(&lock);
+    Obj *o = obj_by_tag((uint32_t)(uintptr_t)ud);
+    if (o && o->bq_cb) post((int)(o - objs), o->bq_cb, 2, o->itf[I_BQ], o->bq_ctx, 0);
+    pthread_mutex_unlock(&lock);
 }
 
 static void at_end(void *ud) {
-    Obj *o = ud;
-    if (o->used && o->play_cb && (o->play_mask & SL_PLAYEVENT_HEADATEND))
-        post(o->play_cb, 3, o->itf[I_PLAY], o->play_ctx, SL_PLAYEVENT_HEADATEND);
+    pthread_mutex_lock(&lock);
+    Obj *o = obj_by_tag((uint32_t)(uintptr_t)ud);
+    if (o && o->play_cb && (o->play_mask & SL_PLAYEVENT_HEADATEND))
+        post((int)(o - objs), o->play_cb, 3, o->itf[I_PLAY], o->play_ctx, SL_PLAYEVENT_HEADATEND);
+    pthread_mutex_unlock(&lock);
 }
 
 /* ---- SLObjectItf ---- */
@@ -170,10 +207,15 @@ static void o_AbortAsyncOperation(NjCtx *c) { (void)c; }
 
 static void o_Destroy(NjCtx *c) {
     Obj *o = obj_of(A(0));
-    if (o->stream >= 0) nj_audio_destroy(o->stream);
+    int id = (int)(o - objs);
+    if (o->stream >= 0) nj_audio_destroy(o->stream); /* no mixer callbacks for it after this */
     pthread_mutex_lock(&lock);
     o->used = 0;
+    pthread_mutex_lock(&ev_lock);
+    drop_events(id);
     pthread_mutex_unlock(&lock);
+    while (!on_pump && running_obj == id) pthread_cond_wait(&ev_done_cv, &ev_lock);
+    pthread_mutex_unlock(&ev_lock);
 }
 static void o_SetPriority(NjCtx *c) { hle_ret(c, SL_RESULT_SUCCESS); }
 static void o_GetPriority(NjCtx *c) {
@@ -239,10 +281,10 @@ static void e_CreateAudioPlayer(NjCtx *c) {
         hle_ret(c, SL_RESULT_CONTENT_UNSUPPORTED);
         return;
     }
-    uint32_t id = (uint32_t)(p - objs);
+
     for (int i = I_PLAY; i < I_COUNT; i++)
-        if (i != I_BQ || p->is_bq) p->itf[i] = make_itf(vt_itf[i], id);
-    nj_audio_set_end_callback(p->stream, at_end, p);
+        if (i != I_BQ || p->is_bq) p->itf[i] = make_itf(vt_itf[i], p);
+    nj_audio_set_end_callback(p->stream, at_end, (void *)(uintptr_t)tag_of(p));
     nj_w32(out, p->self);
     hle_ret(c, SL_RESULT_SUCCESS);
 }
@@ -276,7 +318,7 @@ static void p_GetZero(NjCtx *c) { nj_w32(A(1), 0); hle_ret(c, SL_RESULT_SUCCESS)
 
 static void b_Enqueue(NjCtx *c) {
     Obj *o = obj_of(A(0));
-    nj_audio_queue(o->stream, nj_host(A(1)), A(2), bq_consumed, o);
+    nj_audio_queue(o->stream, nj_host(A(1)), A(2), bq_consumed, (void *)(uintptr_t)tag_of(o));
     hle_ret(c, SL_RESULT_SUCCESS);
 }
 static void b_Clear(NjCtx *c) { nj_audio_clear(obj_of(A(0))->stream); hle_ret(c, SL_RESULT_SUCCESS); }
@@ -346,7 +388,7 @@ static void r_GetRateRange(NjCtx *c) {
 static void hle_slCreateEngine(NjCtx *c) {
     pthread_once(&pump_once, start_pump);
     Obj *e = new_obj(T_ENGINE);
-    e->itf[I_ENGINE] = make_itf(vt_itf[I_ENGINE], (uint32_t)(e - objs));
+    e->itf[I_ENGINE] = make_itf(vt_itf[I_ENGINE], e);
     nj_w32(A(0), e->self);
     hle_ret(c, SL_RESULT_SUCCESS);
 }
