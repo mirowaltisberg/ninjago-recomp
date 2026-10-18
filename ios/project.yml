@@ -46,3 +46,38 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ch.mirowaltisberg.ninjago
+  # The phone: guest code recompiled ahead of time (build/gen from the CMake build), game files bundled.
+  NinjagoPhone:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Platform
+      - path: ../runtime/src
+      - path: ../runtime/backend/aot
+      - path: ../build/gen
+        compilerFlags: ["-Wno-unused-variable", "-Wno-unused-but-set-variable", "-Wno-unused-label"]
+      - path: ../harness/boot.c
+      - path: ../runtime/third_party/dlmalloc/malloc.c
+        compilerFlags: ["-w", "-DONLY_MSPACES=1", "-DMSPACES=1", "-DUSE_LOCKS=1", "-DHAVE_MMAP=0", "-DHAVE_MORECORE=0"]
+      - path: ../runtime/third_party/minimp3/minimp3_impl.c
+        compilerFlags: ["-w"]
+      - path: ../input/extracted/lib/armeabi-v7a/libLEGO_M1.so
+        buildPhase: resources
+      - path: ../input/extracted/Android/Obb/com.lego.ninjago.toe/main.1057.com.lego.ninjago.toe.obb
+        buildPhase: resources
+    dependencies:
+      - sdk: OpenGLES.framework
+      - sdk: QuartzCore.framework
+      - sdk: AudioToolbox.framework
+      - sdk: AVFAudio.framework
+      - sdk: CoreFoundation.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.mirowaltisberg.ninjago
+        SUPPORTED_PLATFORMS: iphoneos
+        HEADER_SEARCH_PATHS: ["$(SRCROOT)/../runtime/include", "$(SRCROOT)/../runtime/third_party", "$(SRCROOT)/../harness", "$(SRCROOT)/../runtime/backend/aot", "$(SRCROOT)/../build/gen"]
+        LIBRARY_SEARCH_PATHS: []
+        OTHER_LDFLAGS: []
+        GCC_OPTIMIZATION_LEVEL: "2"
+        GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GLES_SILENCE_DEPRECATION=1", "NJ_AOT_CHECKS=1"]
