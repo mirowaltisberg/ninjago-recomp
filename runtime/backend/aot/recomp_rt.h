@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "nj/guest.h"
+#include "nj/hle.h"
 
 /* VFP vmla/vmls round twice: never fuse a*b+c into one rounding. */
 #pragma clang fp contract(off)

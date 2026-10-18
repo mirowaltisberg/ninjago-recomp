@@ -1,6 +1,7 @@
 """Function discovery for ARM-mode guest code by recursive descent.
 
-Entries: exported functions, .ARM.exidx starts, relocated pointers into .text and every BL target.
+Entries: exported functions, .ARM.exidx starts, relocated pointers into .text, every BL target and code
+addresses formed relative to pc (static callbacks: `ldr rX, =off; add rY, pc, rX` or adr).
 Each function body is the code reachable from its entry; branches to other entries are tail calls.
 Literal-pool words (targets of PC-relative loads) are never decoded as code. Thumb entries (BLX
 targets, or entries whose first words do not look like ARM code) are listed, not decoded.
@@ -247,6 +248,41 @@ class _Discoverer:
             self.branch_to(f, t, work)
         return cond
 
+    def pc_relative_entries(self, functions):
+        """Undecoded .text addresses that code computes relative to pc: callbacks without symbol, unwind entry
+        or relocation (thread entries, comparators). A linear scan pairs literal loads with add/sub pc."""
+        decoded = set()
+        for f in functions.values():
+            decoded.update(f.insns)
+        found = set()
+        for f in functions.values():
+            lits = {}
+            for a in sorted(f.insns):
+                _, ci = self.dec(a)
+                if ci is None:
+                    continue
+                ops = ci.operands
+                if ci.id == arm.ARM_INS_LDR and len(ops) == 2 and ops[1].type == arm.ARM_OP_MEM \
+                        and ops[1].mem.base == arm.ARM_REG_PC and ops[1].mem.index == 0:
+                    t = _pcrel_targets(ci)
+                    if t:
+                        lits[ops[0].reg] = self.image.read32(t[0])
+                    continue
+                if ci.id in (arm.ARM_INS_ADD, arm.ARM_INS_SUB) and len(ops) == 3 and ops[1].type == arm.ARM_OP_REG \
+                        and ops[1].reg == arm.ARM_REG_PC:
+                    v = None
+                    if ops[2].type == arm.ARM_OP_REG and ops[2].reg in lits and ops[2].shift.type == arm.ARM_SFT_INVALID \
+                            and ci.id == arm.ARM_INS_ADD:
+                        v = (lits[ops[2].reg] + a + 8) & 0xFFFFFFFF
+                    elif ops[2].type == arm.ARM_OP_IMM:
+                        v = (a + 8 + (ops[2].imm if ci.id == arm.ARM_INS_ADD else -ops[2].imm)) & 0xFFFFFFFF
+                    if v is not None and not v & 3 and self.in_text(v) and v not in decoded and v not in self.pool \
+                            and v not in self.entries and v not in self.prog.thumb_functions:
+                        found.add(v)
+                for r in ci.regs_access()[1]:
+                    lits.pop(r, None)
+        return found
+
     # -- whole program ---------------------------------------------------------------------------
     def classify(self, seeds):
         """Split entries into ARM entries and Thumb functions. ARM is the default; Thumb needs evidence:
@@ -293,7 +329,13 @@ class _Discoverer:
         tail = [t for t in odd if t >= self.hi - 0x20000]
         self.thumb_block = (tail[0] - 0x1000, tail[-1] + 0x1000) if tail else (0, 0)
         self.entries = self.classify({s & ~1 for s in seeds})
-        self.run_pass(collect_pool=True)    # pass 1: learn literal pools (and BL targets)
+        functions, _ = self.run_pass(collect_pool=True)  # pass 1: learn literal pools (and BL targets)
+        while True:  # callbacks whose address is formed relative to pc, until nothing new turns up
+            extra = self.classify(self.pc_relative_entries(functions)) - self.entries
+            if not extra:
+                break
+            self.entries |= extra
+            functions, _ = self.run_pass(collect_pool=True)
         functions, issues = self.run_pass(collect_pool=False)  # pass 2: bodies that respect the pools
         for t in list(self.prog.thumb_functions):
             self.entries.discard(t)

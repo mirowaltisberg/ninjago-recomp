@@ -97,3 +97,21 @@ def test_symbol_parity_decides_mode(program, guest_elf):
         else:
             assert False, f"{name} at {v:#x} has an even (ARM) symbol but was classified Thumb"
     assert guest_elf.exported["__aeabi_ldivmod"] in program.functions
+
+
+def test_pc_relative_code_addresses_are_entries(program):
+    """Static functions passed as callbacks (thread entries, sort comparators) have no symbol, unwind entry or
+    relocation: their address is formed relative to pc (ldr rX, =off; add rY, pc, rX)."""
+    for e in (0x2F94A4, 0x23A5C0, 0x2F13CC):
+        assert e in program.functions, hex(e)
+
+
+def test_synthetic_pc_relative_entry():
+    # 0x1000: ldr r1, [pc, #4]   (literal at 0x100c)
+    # 0x1004: add r1, pc, r1     (r1 = 8 + 0x100c = 0x1014: a callback address)
+    # 0x1008: bx lr ; 0x100c: .word 8 ; 0x1010: .word 0 ; 0x1014: bx lr  <- the callback
+    code = _arm(0xE59F1004, 0xE08F1001, 0xE12FFF1E, 0x00000008, 0x00000000, 0xE12FFF1E)
+    prog = discover_bytes(code, base_vaddr=0x1000, entries=[0x1000])
+    assert 0x1014 in prog.functions
+    assert 0x100C not in prog.functions  # the literal itself is data
+    assert not prog.issues

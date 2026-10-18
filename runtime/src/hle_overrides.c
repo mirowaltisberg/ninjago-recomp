@@ -53,7 +53,46 @@ static void guard_release(NjCtx *c) {
     pthread_mutex_unlock(&guard_lock);
 }
 
+/* Two gabi++ static constructors compiled as Thumb (init_array entries 397 and 398), replayed exactly:
+ * same import calls, same stores. Addresses are link addresses; the image is loaded at NJ_IMAGE_BASE. */
+static void call_import(NjCtx *c, const char *name) { hle_dispatch(c, hle_thunk(name)); }
+#define G(link) (NJ_IMAGE_BASE + (link))
+
+static void gabi_ctor_397(NjCtx *c) {
+    c->r[0] = G(0x549afc); /* thread-local key */
+    c->r[1] = G(0x3ee901); /* its destructor (Thumb; never run: thread-exit destructors are not emulated) */
+    call_import(c, "pthread_key_create");
+    if (c->r[0] != 0) nj_fatal("gabi++ static constructor: pthread_key_create failed");
+    uint32_t s = G(0x549ae4);
+    nj_w32(s, 12);
+    nj_w32(s + 8, 12 + 0xff0);
+    nj_w32(s + 4, 0x155);
+    c->r[0] = s + 12;
+    c->r[1] = 0;
+    call_import(c, "pthread_mutex_init");
+    nj_w32(s + 0x14, 0);
+    nj_w32(s + 0x10, 0);
+    c->r[0] = G(0x549ae0);
+    c->r[1] = G(0x3ee92d); /* atexit handler (Thumb; never run) */
+    c->r[2] = nj_r32(G(0x43dc60));
+    call_import(c, "__cxa_atexit");
+}
+
+static void gabi_ctor_398(NjCtx *c) {
+    c->r[0] = G(0x549b0c);
+    c->r[1] = 0;
+    call_import(c, "pthread_mutex_init");
+    c->r[0] = G(0x549b0c);
+    c->r[1] = G(0x3efb6d); /* atexit handler (Thumb; never run) */
+    c->r[2] = nj_r32(G(0x43dc60));
+    call_import(c, "__cxa_atexit");
+}
+
 void hle_overrides_register(void) {
+    static const uint8_t ctor397_code[] = {0x14, 0x48, 0x15, 0x49, 0x38, 0xb5, 0x78, 0x44};
+    static const uint8_t ctor398_code[] = {0x10, 0xb5, 0x00, 0x21, 0x07, 0x4c, 0x7c, 0x44};
+    hle_register_override_code(0x1729cc, ctor397_code, sizeof ctor397_code, "gabi++ static ctor 397", gabi_ctor_397);
+    hle_register_override_code(0x172a3c, ctor398_code, sizeof ctor398_code, "gabi++ static ctor 398", gabi_ctor_398);
     static const uint8_t acquire_code[] = {0x70, 0xb5, 0x04, 0x46, 0x13, 0x4e, 0x7e, 0x44}; /* push {r4-r6,lr}; … */
     static const uint8_t release_code[] = {0x0a, 0x4b, 0x10, 0xb5, 0x7b, 0x44, 0x04, 0x46}; /* ldr r3,[pc,#40]; … */
     hle_register_override_code(0x3ef470, acquire_code, sizeof acquire_code, "__cxa_guard_acquire", guard_acquire);

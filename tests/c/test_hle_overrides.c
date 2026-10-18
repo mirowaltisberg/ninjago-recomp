@@ -68,3 +68,10 @@ NJ_TEST(cxa_guard_one_initialiser_others_wait) {
     NJ_EQ_U(nj_r32(guard_ga), 1);
     NJ_EQ_U(call(acquire, guard_ga), 0);
 }
+
+/* The two static constructors compiled as Thumb (init_array entries 397/398) are replaced as well. */
+NJ_TEST(thumb_static_constructors_are_overridden) {
+    setup();
+    NJ_CHECK(hle_override_at(NJ_IMAGE_BASE + 0x1729cc) != NULL);
+    NJ_CHECK(hle_override_at(NJ_IMAGE_BASE + 0x172a3c) != NULL);
+}
