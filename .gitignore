@@ -1,0 +1,17 @@
+# Game files: personal copies only, never commit or push
+input/
+*.ipa
+*.apk
+*.xapk
+*.obb
+*.fib
+*.so
+# Generated translation of the game code (derived from the game binary) and build output
+gen/
+build/
+*.xcarchive
+DerivedData/
+# Tooling
+.venv/
+__pycache__/
+.DS_Store
