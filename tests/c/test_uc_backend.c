@@ -144,3 +144,16 @@ NJ_TEST(uc_mem_frozen_after_init) {
     setup();
     NJ_EXPECT_FATAL(nj_mem_map(0x00E00000u, 0x4000, NJ_PROT_R), "frozen");
 }
+
+NJ_TEST(uc_ctx_unchanged_after_hle_call) {
+    setup();
+    NjCtx *c = nj_ctx();
+    uint32_t sp = c->r[13], lr = c->r[14];
+    c->r[7] = 0x77777777;
+    uint32_t a[4] = {21, 0, 0, hle_thunk("t_double")};
+    NJ_EQ_U(nj_call(c, FN_CALL_R3, 4, a), 42); /* the guest makes an HLE call inside */
+    NJ_EQ_U(nj_call(c, FN_CALL_R3, 4, a), 42);
+    NJ_EQ_U(c->r[13], sp); /* the contract: everything except r0/r1 is unchanged */
+    NJ_EQ_U(c->r[14], lr);
+    NJ_EQ_U(c->r[7], 0x77777777);
+}

@@ -205,6 +205,9 @@ uint32_t nj_call(NjCtx *c, uint32_t fn, int argc, const uint32_t *argv) {
     uc_engine *uc = t->eng[level];
     NjCtx *inner = &t->ctx[level];
 
+    /* HLE calls made by the guest during this call sync their registers into ctx[level], which is the
+     * caller's own context at depth 0; snapshot it so the contract (only r0/r1 change) holds. */
+    NjCtx saved = *c;
     uint32_t sp = c->r[13];
     if (level > 0) sp -= 64; /* stay clear of the interrupted frame */
     sp &= ~7u;
@@ -237,6 +240,7 @@ uint32_t nj_call(NjCtx *c, uint32_t fn, int argc, const uint32_t *argv) {
     uint32_t r0, r1;
     uc_reg_read(uc, UC_ARM_REG_R0, &r0);
     uc_reg_read(uc, UC_ARM_REG_R1, &r1);
+    *c = saved;
     c->r[0] = r0;
     c->r[1] = r1;
     nj_fatal_ctx = outer_fatal;
