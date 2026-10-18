@@ -1,5 +1,5 @@
 # Game files: personal copies only, never commit or push
-input/
+/input
 *.ipa
 *.apk
 *.xapk
