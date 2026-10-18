@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "nj/gles.h"
 #include "nj/hle.h"
@@ -46,7 +47,6 @@ THUNK(glClear, U(0))
 THUNK(glClearColor, F(0), F(1), F(2), F(3))
 THUNK(glClearDepthf, F(0))
 THUNK(glClearStencil, S(0))
-THUNK(glCompileShader, U(0))
 RET(glCreateProgram)
 RET(glCreateShader, U(0))
 THUNK(glDeleteBuffers, S(0), P(1))
@@ -81,7 +81,6 @@ THUNK(glGetProgramiv, U(0), U(1), P(2))
 THUNK(glGetShaderInfoLog, U(0), S(1), P(2), P(3))
 THUNK(glGetShaderiv, U(0), U(1), P(2))
 RET(glGetUniformLocation, U(0), P(1))
-THUNK(glLinkProgram, U(0))
 THUNK(glRenderbufferStorage, U(0), U(1), S(2), S(3))
 THUNK(glScissor, S(0), S(1), S(2), S(3))
 THUNK(glStencilFunc, U(0), S(1), U(2))
@@ -103,30 +102,66 @@ THUNK(glDeleteVertexArraysOES, S(0), P(1))
 /* ---- developer switches (environment), for bisecting rendering problems ----
  * NJ_SHADER_DUMP_DIR  save every shader source (as the guest wrote it) as shader_<id>.glsl
  * NJ_GL_RAW_SHADERS   pass shaders to GL without nj_glsl_patch
- * NJ_GL_SKIP          comma-separated draws to drop: "stencil" (stencil test on) or a substring of the
- *                     program's shader-key comment (e.g. "pos=outline")
- * NJ_GL_STATS         log each shader key the first time it draws with the stencil test on */
+ * NJ_GL_SKIP          comma-separated rules applied from the start (see below)
+ * NJ_GL_CTL           control file, re-read while the game runs, one rule per line:
+ *                       skip stencil      drop draws made with the stencil test on
+ *                       skip <text>       drop draws whose program's shader-key comment contains <text>
+ *                       skipprog <id>     drop draws of one program
+ *                       log <n>           log the next <n> draws with their GL state
+ * NJ_GL_STATS         log each shader key the first time it draws with the stencil test on
+ * Shaders that fail to compile or link are always logged. */
 #define MAX_KEYED 2048
-#define MAX_SKIP 8
+#define MAX_RULES 32
 static struct { GLuint id; char *key; } shader_keys[MAX_KEYED], program_keys[MAX_KEYED];
 static int nshader_keys, nprogram_keys;
 static pthread_mutex_t key_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t dbg_once = PTHREAD_ONCE_INIT;
-static char *skip_list[MAX_SKIP];
-static int nskip, dbg_on, dbg_stats, skip_stencil;
-static const char *dump_dir;
+static char *skip_text[MAX_RULES];
+static GLuint skip_prog[MAX_RULES];
+static int nskip_text, nskip_prog, skip_stencil, log_left, dbg_on, dbg_stats;
+static const char *dump_dir, *ctl_path;
+static struct timespec ctl_mtime;
 static _Thread_local GLuint cur_program;
+
+/* Caller holds key_lock. Rules are separated by commas or newlines. */
+static void parse_rules(const char *text) {
+    for (int i = 0; i < nskip_text; i++) free(skip_text[i]);
+    nskip_text = nskip_prog = skip_stencil = 0;
+    char *copy = strdup(text ? text : ""), *list = copy, *tok;
+    while ((tok = strsep(&list, ",\n"))) {
+        char arg[256] = "";
+        if (!strcmp(tok, "skip stencil") || !strcmp(tok, "stencil")) skip_stencil = 1;
+        else if (sscanf(tok, "skipprog %u", &skip_prog[nskip_prog]) == 1) nskip_prog += nskip_prog < MAX_RULES - 1;
+        else if (sscanf(tok, "log %d", &log_left) == 1) {}
+        else if (sscanf(tok, "skip %255[^\n]", arg) == 1 && nskip_text < MAX_RULES) skip_text[nskip_text++] = strdup(arg);
+        else if (*tok && !strchr(tok, ' ') && nskip_text < MAX_RULES) skip_text[nskip_text++] = strdup(tok);
+    }
+    free(copy);
+}
 
 static void dbg_init(void) {
     dump_dir = getenv("NJ_SHADER_DUMP_DIR");
+    ctl_path = getenv("NJ_GL_CTL");
     dbg_stats = getenv("NJ_GL_STATS") != NULL;
-    const char *skip = getenv("NJ_GL_SKIP");
-    for (char *list = skip ? strdup(skip) : NULL, *tok; list && (tok = strsep(&list, ",")) && nskip < MAX_SKIP;)
-        if (*tok) {
-            if (!strcmp(tok, "stencil")) skip_stencil = 1;
-            else skip_list[nskip++] = tok;
-        }
-    dbg_on = dbg_stats || skip_stencil || nskip;
+    parse_rules(getenv("NJ_GL_SKIP"));
+    dbg_on = dbg_stats || ctl_path || skip_stencil || nskip_text || nskip_prog;
+}
+
+/* Caller holds key_lock. */
+static void reload_ctl(void) {
+    struct stat st;
+    if (!ctl_path || stat(ctl_path, &st) != 0) return;
+    if (st.st_mtimespec.tv_sec == ctl_mtime.tv_sec && st.st_mtimespec.tv_nsec == ctl_mtime.tv_nsec) return;
+    ctl_mtime = st.st_mtimespec;
+    FILE *f = fopen(ctl_path, "r");
+    if (!f) return;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    parse_rules(buf);
+    fprintf(stderr, "[gl] control: %d text, %d program rules, stencil %d, log %d\n", nskip_text, nskip_prog, skip_stencil,
+            log_left);
 }
 
 /* Caller holds key_lock. */
@@ -154,10 +189,14 @@ static void remember_shader(GLuint shader, const char *src) {
     pthread_mutex_unlock(&key_lock);
 }
 
+static const char *program_key(GLuint p) {
+    char **pk = key_slot(program_keys, &nprogram_keys, p, 0);
+    return pk && *pk ? *pk : "";
+}
+
 static void h_glAttachShader(NjCtx *c) {
     glAttachShader(U(0), U(1));
     pthread_once(&dbg_once, dbg_init);
-    if (!dbg_on) return;
     pthread_mutex_lock(&key_lock);
     char **sk = key_slot(shader_keys, &nshader_keys, U(1), 0), **pk = key_slot(program_keys, &nprogram_keys, U(0), 1);
     if (sk && *sk && pk) {
@@ -170,21 +209,70 @@ static void h_glAttachShader(NjCtx *c) {
     pthread_mutex_unlock(&key_lock);
 }
 
+static void h_glCompileShader(NjCtx *c) {
+    glCompileShader(U(0));
+    GLint ok = 1;
+    glGetShaderiv(U(0), GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[1024] = "";
+        glGetShaderInfoLog(U(0), sizeof log, NULL, log);
+        fprintf(stderr, "[gl] shader %u failed to compile: %s\n", U(0), log);
+    }
+}
+
+static void h_glLinkProgram(NjCtx *c) {
+    glLinkProgram(U(0));
+    GLint ok = 1;
+    glGetProgramiv(U(0), GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024] = "";
+        glGetProgramInfoLog(U(0), sizeof log, NULL, log);
+        pthread_mutex_lock(&key_lock);
+        fprintf(stderr, "[gl] program %u failed to link: %s (%s)\n", U(0), log, program_key(U(0)));
+        pthread_mutex_unlock(&key_lock);
+    }
+}
+
 static void h_glUseProgram(NjCtx *c) {
     glUseProgram(U(0));
     cur_program = U(0);
 }
 
+/* Short form of a shader key for draw logs: the feature list without the "albedo=" prefix. */
+static void short_key(const char *key, char *out, size_t n) {
+    const char *a = strstr(key, "albedo=");
+    snprintf(out, n, "%s", a ? a + 7 : key);
+    char *sp = strchr(out, ' ');
+    if (sp) *sp = 0;
+}
+
 /* Returns 1 when the current draw must be dropped. */
-static int dbg_drop(void) {
+static int dbg_drop(GLenum mode, GLsizei count) {
     pthread_once(&dbg_once, dbg_init);
     if (!dbg_on) return 0;
-    int stencil = glIsEnabled(GL_STENCIL_TEST);
+    static unsigned calls;
     pthread_mutex_lock(&key_lock);
-    char **pk = key_slot(program_keys, &nprogram_keys, cur_program, 0);
-    const char *key = pk && *pk ? *pk : "";
+    if ((calls++ & 255) == 0) reload_ctl();
+    int stencil = glIsEnabled(GL_STENCIL_TEST);
+    const char *key = program_key(cur_program);
     int drop = stencil && skip_stencil;
-    for (int i = 0; i < nskip && !drop; i++) drop = strstr(key, skip_list[i]) != NULL;
+    for (int i = 0; i < nskip_text && !drop; i++) drop = strstr(key, skip_text[i]) != NULL;
+    for (int i = 0; i < nskip_prog && !drop; i++) drop = skip_prog[i] == cur_program;
+    if (log_left > 0) {
+        log_left--;
+        GLint fb = 0, df = 0, dm = 0, bs = 0, bd = 0, ff = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
+        glGetIntegerv(GL_DEPTH_FUNC, &df);
+        glGetIntegerv(GL_DEPTH_WRITEMASK, &dm);
+        glGetIntegerv(GL_BLEND_SRC_RGB, &bs);
+        glGetIntegerv(GL_BLEND_DST_RGB, &bd);
+        glGetIntegerv(GL_FRONT_FACE, &ff);
+        char sk[200];
+        short_key(key, sk, sizeof sk);
+        fprintf(stderr, "[gl] draw prog %u mode %u n %d fb %d depth %d/0x%x/%d blend %d 0x%x/0x%x cull %d ff 0x%x stencil %d%s %s\n",
+                cur_program, mode, count, fb, glIsEnabled(GL_DEPTH_TEST), df, dm, glIsEnabled(GL_BLEND), bs, bd,
+                glIsEnabled(GL_CULL_FACE), ff, stencil, drop ? " DROPPED" : "", sk);
+    }
     if (dbg_stats && stencil) {
         static char *seen[256];
         static int nseen;
@@ -192,13 +280,11 @@ static int dbg_drop(void) {
         for (int i = 0; i < nseen; i++) known |= !strcmp(seen[i], key);
         if (!known && nseen < 256) {
             seen[nseen++] = strdup(key);
-            GLint func = 0, ref = 0, pass = 0, depth = 0;
+            GLint func = 0, ref = 0, pass = 0;
             glGetIntegerv(GL_STENCIL_FUNC, &func);
             glGetIntegerv(GL_STENCIL_REF, &ref);
             glGetIntegerv(GL_STENCIL_PASS_DEPTH_PASS, &pass);
-            depth = glIsEnabled(GL_DEPTH_TEST);
-            fprintf(stderr, "[gl] stencil draw: func 0x%x ref %d pass-op 0x%x depth %d blend %d program %u: %s\n", func, ref,
-                    pass, depth, glIsEnabled(GL_BLEND), cur_program, key);
+            fprintf(stderr, "[gl] stencil draw: func 0x%x ref %d pass-op 0x%x program %u: %s\n", func, ref, pass, cur_program, key);
         }
     }
     pthread_mutex_unlock(&key_lock);
@@ -206,7 +292,7 @@ static int dbg_drop(void) {
 }
 
 static void h_glDrawArrays(NjCtx *c) {
-    if (dbg_drop()) return;
+    if (dbg_drop(U(0), S(2))) return;
     glDrawArrays(U(0), S(1), S(2));
 }
 
@@ -256,7 +342,7 @@ static void h_glVertexAttribPointer(NjCtx *c) {
 }
 
 static void h_glDrawElements(NjCtx *c) {
-    if (dbg_drop()) return;
+    if (dbg_drop(U(0), S(1))) return;
     glDrawElements(U(0), S(1), U(2), offset_or_pointer(c, 3, GL_ELEMENT_ARRAY_BUFFER_BINDING));
 }
 
@@ -279,7 +365,7 @@ static void h_glShaderSource(NjCtx *c) {
     char *patched = getenv("NJ_GL_RAW_SHADERS") ? strdup(src) : nj_glsl_patch(src);
     const GLchar *one = patched;
     glShaderSource(U(0), 1, &one, NULL);
-    if (dbg_on) remember_shader(U(0), src);
+    remember_shader(U(0), src);
     if (dump_dir) {
         char path[1024];
         snprintf(path, sizeof path, "%s/shader_%04u.glsl", dump_dir, U(0));

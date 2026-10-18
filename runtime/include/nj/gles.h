@@ -17,7 +17,7 @@ void nj_egl_set_current_main(void);
 unsigned nj_egl_config_handle(void);
 
 /* Returns a malloc'd copy of a guest shader made safe for Apple's IEEE renderers: normalize() of a zero vector
- * yields zero (as on the Android GPUs the game targeted) instead of NaN, which turned whole triangles black. */
+ * yields zero instead of NaN (which would black out whole triangles). */
 char *nj_glsl_patch(const char *src);
 
 /* Decode ATC textures to RGBA8 before upload (true on iOS, whose GPUs lack ATC). */

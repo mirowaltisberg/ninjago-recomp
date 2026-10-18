@@ -1,7 +1,8 @@
-/* Guest shader fix-ups for Apple's renderers. The game's lighting normalizes tangent-space light vectors that are
- * exactly zero when a mesh has no tangents and a point light sits in the surface plane (hit effects at a fighter's
- * feet). GLSL leaves normalize(0) undefined; the Android GPUs the game shipped on gave a finite result, Apple's
- * IEEE renderers give NaN, and a NaN varying blacks out the whole triangle. */
+/* Guest shader fix-ups for Apple's renderers. The game's point-light shaders normalize a tangent-space light vector
+ * that is exactly zero for a mesh without tangents when the light lies in the surface plane. GLSL leaves
+ * normalize(0) undefined; Apple's IEEE renderers return NaN, which blacks out the whole triangle (sim_glsl_nan
+ * shows it on the Simulator's renderer). A safeguard: the game hitting that case has not been observed yet; the
+ * black floor triangles seen in the Simulator are its renderer mis-clipping (sim_gl_clip). */
 #include <stdlib.h>
 #include <string.h>
 
