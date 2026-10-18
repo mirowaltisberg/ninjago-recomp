@@ -1,0 +1,48 @@
+name: Ninjago
+options:
+  bundleIdPrefix: ch.mirowaltisberg
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 43DHLG947A
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    CLANG_ENABLE_OBJC_ARC: YES
+    GCC_C_LANGUAGE_STANDARD: gnu11
+    GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GLES_SILENCE_DEPRECATION=1"]
+    HEADER_SEARCH_PATHS: ["$(SRCROOT)/../runtime/include", "$(SRCROOT)/../runtime/third_party", "$(SRCROOT)/../harness", "$(SRCROOT)/../build/unicorn-sim/include"]
+    LIBRARY_SEARCH_PATHS: ["$(SRCROOT)/../build/unicorn-sim/lib"]
+    OTHER_LDFLAGS: ["-lunicorn", "-larm-softmmu", "-lunicorn-common"]
+    SUPPORTED_PLATFORMS: iphonesimulator
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+    INFOPLIST_KEY_UIStatusBarHidden: YES
+    INFOPLIST_KEY_UIRequiresFullScreen: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_CFBundleDisplayName: "Ninjago"
+targets:
+  Ninjago:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Platform
+      - path: ../runtime/src
+      - path: ../runtime/backend/unicorn
+      - path: ../harness/boot.c
+      - path: ../runtime/third_party/dlmalloc/malloc.c
+        compilerFlags: ["-w", "-DONLY_MSPACES=1", "-DMSPACES=1", "-DUSE_LOCKS=1", "-DHAVE_MMAP=0", "-DHAVE_MORECORE=0"]
+      - path: ../runtime/third_party/minimp3/minimp3_impl.c
+        compilerFlags: ["-w"]
+    dependencies:
+      - sdk: OpenGLES.framework
+      - sdk: QuartzCore.framework
+      - sdk: AudioToolbox.framework
+      - sdk: AVFAudio.framework
+      - sdk: CoreFoundation.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.mirowaltisberg.ninjago
