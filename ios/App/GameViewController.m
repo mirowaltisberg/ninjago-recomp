@@ -195,6 +195,12 @@ static const char *env_or(const char *name, NSString *fallback) {
     static NjBootConfig cfg;
     cfg.so_path = strdup(env_or("NJ_SO", [bundle stringByAppendingPathComponent:@"libLEGO_M1.so"]));
     cfg.obb_path = strdup(env_or("NJ_OBB", [bundle stringByAppendingPathComponent:@"main.1057.com.lego.ninjago.toe.obb"]));
+    /* NJ_SANDBOX (developer testing): start from a fresh save in the temporary folder instead of the player's */
+    const char *test_sandbox = getenv("NJ_SANDBOX");
+    if (test_sandbox && *test_sandbox) {
+        docs = [NSTemporaryDirectory() stringByAppendingPathComponent:@(test_sandbox)];
+        [NSFileManager.defaultManager removeItemAtPath:docs error:nil];
+    }
     cfg.sandbox_dir = strdup(docs.UTF8String);
     cfg.width = _w;
     cfg.height = _h;

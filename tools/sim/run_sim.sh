@@ -18,7 +18,8 @@ xcrun simctl terminate "$DEV" ch.mirowaltisberg.ninjago >/dev/null 2>&1 || true
 export SIMCTL_CHILD_NJ_SO="$ROOT/input/extracted/lib/armeabi-v7a/libLEGO_M1.so"
 export SIMCTL_CHILD_NJ_OBB="$ROOT/input/extracted/Android/Obb/com.lego.ninjago.toe/main.1057.com.lego.ninjago.toe.obb"
 export SIMCTL_CHILD_NJ_TAPS="${NJ_TAPS:-}"
-# pass other NJ_* developer switches (NJ_RENDER_SCALE, NJ_GL_SKIP, NJ_GL_STATS, NJ_SHADER_DUMP_DIR, NJ_TRACE) through
+# pass other NJ_* developer switches (NJ_RENDER_SCALE, NJ_GL_SKIP, NJ_GL_STATS, NJ_SHADER_DUMP_DIR, NJ_TRACE,
+# NJ_SANDBOX for a fresh save, NJ_CHEAT_LOG, NJ_TOUCH_LOG) through
 for v in $(compgen -e | grep -E '^NJ_' | grep -vE '^NJ_(TAPS|SO|OBB)$'); do export "SIMCTL_CHILD_$v=${!v}"; done
 if [ "$SECS" = 0 ]; then
   xcrun simctl launch "$DEV" ch.mirowaltisberg.ninjago >/dev/null
