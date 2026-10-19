@@ -129,8 +129,9 @@ The technical notes cover every step, the numbers and the problems found on the 
 
 ## Legal
 
-This repository contains only original tooling. No game code or game data is included, and nothing generated from
-them is committed: you need your own copy of the game. This is a personal preservation project and is not
+The code in this repository is original tooling. No game code or game data is included, and nothing generated from
+them is committed: you need your own copy of the game. The screenshots and the app icon shown on this page are the
+rights holders' artwork, shown for illustration. This is a personal preservation project and is not
 affiliated with or endorsed by the LEGO Group, Warner Bros. Games, TT Games or Hellbent Games. LEGO, the LEGO logo
 and NINJAGO are trademarks of the LEGO Group. Third-party components are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 
