@@ -101,9 +101,13 @@ made the D-pad register a new swipe whenever a second finger touched the screen.
 means under the rounded corners and the camera. The GL layer recognises the 2D overlay drawn after the 3D scene,
 draws it slightly scaled towards the centre and maps touches back, while full-screen backgrounds stay full-screen.
 
-**Two bugs that were not bugs.** The Simulator showed black floors: its software renderer mis-clips triangles
+**Three bugs that were not bugs.** The Simulator showed black floors: its software renderer mis-clips triangles
 behind the camera, the device does not. The prize draw's back button "did nothing": the game's own state machine
-only accepts back after you continue past the result, and it saves at that moment.
+only accepts back after you continue past the result, and it saves at that moment. And one launch in the Simulator
+died 9 seconds in, while the Mac was buried under Spotlight and iCloud work (load average 58). The crash report
+shows the chain: the game's OpenSL `Realize` starts the audio unit, the audio server does not answer in time, and
+Apple's AudioToolbox aborts the process on purpose (`_ReportRPCTimeout`). It is the only crash report from a day of
+hundreds of launches.
 
 ## Options
 
@@ -155,9 +159,11 @@ tools/sim/run_sim.sh 0
 
 The phone build bundles your `.so` and `.obb`, so it stays on your own devices.
 
-`tools/device/smoke.sh` checks an installed phone build end to end: it starts the app with a fresh test save (your
-own save is not touched), taps through the menus into the dojo and passes when the game booted, the player exists
-and the frame rate is at least 55 fps.
+`tools/device/smoke.sh` checks an installed phone build end to end without touching your own save: it starts the
+app with a test save in its temporary folder and taps through the menus. By default it plays from a fresh save into
+the dojo and passes when the game booted, the player exists and the frame rate is at least 55 fps. With
+`--fight SAVE` it starts from a save past the tutorial, switches Invincible on for that run only and goes into
+Chen's Island Arena, where it also checks that every enemy hit is refilled.
 
 ## Repository map
 
