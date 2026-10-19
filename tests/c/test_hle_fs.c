@@ -26,7 +26,7 @@ static void setup(void) {
     hle_libc_core_register(NULL);
     hle_fs_register();
     NJ_EQ_U(nj_backend_init(), 0);
-    snprintf(tmpdir, sizeof tmpdir, "/tmp/claude-501-njfsXXXXXX");
+    snprintf(tmpdir, sizeof tmpdir, "/tmp/nj-fsXXXXXX");
     NJ_CHECK(mkdtemp(tmpdir) != NULL);
     nj_fs_map_prefix(FILES, tmpdir);
     nj_fs_map_prefix("/data/data/com.lego.ninjago.toe", "/nonexistent-shorter-prefix");
@@ -166,7 +166,7 @@ NJ_TEST(fs_open_linux_flags) {
 
 NJ_TEST(fs_stderr_fprintf) {
     setup();
-    char path[] = "/tmp/claude-501-njerrXXXXXX";
+    char path[] = "/tmp/nj-errXXXXXX";
     int cap = mkstemp(path);
     int saved = dup(2);
     dup2(cap, 2);
