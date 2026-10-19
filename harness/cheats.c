@@ -96,7 +96,7 @@ static int readable(uint32_t ga, uint32_t size) { return ga >= 0x1000 && nj_mem_
  * Hud_SetHeartCount, which stops every heart's animation and restarts them only for a changed count, so it is
  * called only when the hearts on screen differ from the full count. A player at 0 is already dying: the game's
  * own respawn takes over. */
-static void refill_player(void) {
+static void refill_player(int refill) {
     static uint32_t seen_go, seen_state; /* NJ_CHEAT_LOG: report the player object and health when they change */
     uint32_t go = nj_r32(g.player);
     uint32_t cd = readable(go, GO_CHARDATA + 4) ? nj_r32(go + GO_CHARDATA) : 0;
@@ -111,7 +111,7 @@ static void refill_player(void) {
         fprintf(stderr, "[cheats] player %08x health %u of %u\n", go, hp, max);
     seen_go = go;
     seen_state = (uint32_t)hp << 16 | max;
-    if (hp == 0 || hp >= max) return;
+    if (!refill || hp == 0 || hp >= max) return;
     nj_w16(cd + CD_HEALTH, max);
     if (log_on) fprintf(stderr, "[cheats] player health %u -> %u\n", hp, max);
     if (!g.hud_hearts || !g.hud_bar || !g.per_heart) return;
@@ -124,5 +124,5 @@ void nj_cheats_apply(void) {
     if (g.options) apply_unlocks();
     if (g.extras) apply_extras();
     if (g.save) apply_floors();
-    if (cur.invincible && g.player) refill_player();
+    if (g.player && (cur.invincible || log_on)) refill_player(cur.invincible); /* the log also watches without it */
 }
