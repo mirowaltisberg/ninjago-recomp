@@ -145,6 +145,21 @@ NJ_TEST(stud_and_token_floors) {
     nj_w32(save + NJ_SAVE_DRAW_TOKENS, 0);
 }
 
+/* The refill tells the hearts display only when its count changes: Hud_SetHeartCount stops every heart's
+ * animation and restarts them only for a changed count, so a call with the same count garbles the display.
+ * The port's count must therefore match the game's own, read back from HudPlayerBar after calling it. */
+NJ_TEST(heart_count_matches_the_game) {
+    boot_once();
+    uint32_t bar = sym("HudPlayerBar"), per = nj_r32(sym("gdv_percentPerHeart"));
+    NJ_EQ_U(per, 33);
+    /* from two hearts up: at one heart the game switches on its low-health vignette, which exists only in a level */
+    static const uint32_t health[] = {34, 65, 66, 67, 98, 99, 100, 132, 133, 165, 166, 200, 1000};
+    for (unsigned i = 0; i < sizeof health / sizeof health[0]; i++) {
+        ask("_Z17Hud_SetHeartCountj", 1, health[i], 0, 0);
+        NJ_EQ_U(nj_cheats_hearts(health[i], per), nj_r8(bar + 0x444));
+    }
+}
+
 NJ_TEST(invincibility_refills_the_player) {
     boot_once();
     uint32_t player = sym("GOPlayer_Active");

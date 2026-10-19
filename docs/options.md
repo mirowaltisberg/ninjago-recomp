@@ -25,14 +25,15 @@ never touched.
 ## Red-brick extras
 
 `Extras_Active` (0x451910) is a bit mask; `Extras_IsActive(n)` tests bit `n`. The extras' names live in compressed
-text files, so their meaning was read from what each caller does:
+text files, so their meaning was first read from what each caller does, then checked against the game's own
+Extras screen:
 
-| Extra | Caller | Effect | Option |
-|---|---|---|---|
-| 1 | `GOCharacter_RegenerateHealth` | health regenerates by twice the amount | Faster healing |
-| 3 | `GOPlayer_InitPlayers` | adds to the player's maximum health at level start | Extra hearts |
-| 5 | `GO_DefaultHit` | hits by the player do double damage | Double damage |
-| 7 / 8 / 9 | `Extras_ApplyStudMultiplier` | studs ×2 / ×4 / ×6, first active one wins | Stud multiplier |
+| Extra | Caller | Effect (from the code) | Name in the game | Option |
+|---|---|---|---|---|
+| 1 | `GOCharacter_RegenerateHealth` | health regenerates by twice the amount | Health Regeneration | Faster healing |
+| 3 | `GOPlayer_InitPlayers` | adds to the player's maximum health at level start | Extra Heart | Extra hearts |
+| 5 | `GO_DefaultHit` | hits by the player do double damage | Increase Damage | Double damage |
+| 7 / 8 / 9 | `Extras_ApplyStudMultiplier` | studs ×2 / ×4 / ×6, first active one wins | ×2 / ×4 / ×6 | Stud multiplier |
 
 The multiplier is one choice in the sheet because the game tests 7, then 8, then 9. The port clears only the bits
 it set itself, so extras switched on in the game's own Extras menu stay on.
@@ -52,9 +53,16 @@ Both are stored with the game's next save.
 
 There is no invincibility extra. `GOPlayer_Active` (0x53dfe0) points at the player object; `+0x7c` is its character
 data with the health at `+0xd0` (`GOCharacter_GetHealth`), and the maximum sits at `[+0x164] + 0x3b8`
-(`GOCharacter_SetHealth` clamps to it). **Invincible** refills lost health on the next frame and calls
-`Hud_SetHeartCount`, because the hearts display only updates through that function. A player already at 0 is
-left to the game's own respawn.
+(`GOCharacter_SetHealth` clamps to it). **Invincible** refills lost health on the next frame. A player already at 0
+is left to the game's own respawn.
+
+The hearts display only updates through `Hud_SetHeartCount`, and that function has a trap: it stops the animation
+of every heart and restarts animations only for hearts whose count changed. Calling it with the count already on
+screen leaves the hearts half drawn (the first version of this option showed five hearts with a gap). The refill
+therefore computes the hearts the game would show (`ceil(health / gdv_percentPerHeart)`, at most five, read back
+from `HudPlayerBar + 0x444` in `test_cheats`) and calls it only when that number differs. In a real arena fight
+an enemy hits for 12 of 99, which never changes the three hearts, so the display is left to the game; the red flash
+on each hit is the game's own effect.
 
 ## A bug that was game design
 
