@@ -47,6 +47,7 @@
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     if (_booted || self.view.bounds.size.width < self.view.bounds.size.height) return; /* wait for landscape */
+    [NJOptions registerDefaults]; /* before the first overlay scale, which reads an option */
     [self createFramebuffer];
     [self boot];
     [self addOptionsButton];
@@ -188,7 +189,6 @@ static const char *env_or(const char *name, NSString *fallback) {
 
 - (void)boot {
     _booted = YES;
-    [NJOptions registerDefaults];
     _touches = [NSMutableArray array];
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *bundle = NSBundle.mainBundle.resourcePath;

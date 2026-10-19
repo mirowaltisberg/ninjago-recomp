@@ -37,5 +37,7 @@ void nj_cheats_bind(const NjImage *img);
 void nj_cheats_set(const NjCheats *c);
 /* Apply the options to the game's state; nj_frame calls this before every frame. */
 void nj_cheats_apply(void);
+/* Hearts the game's display shows for this health (Hud_SetHeartCount: ceil(health / per heart), at most 5). */
+uint32_t nj_cheats_hearts(uint32_t health, uint32_t per_heart);
 
 #endif
