@@ -1,187 +1,141 @@
-# LEGO Ninjago Tournament, recompiled for iOS
-
-**A 32-bit Android game, translated function by function into native 64-bit iOS code.** No source code, no emulator
-at runtime, no JIT: the game's ARMv7 engine is statically recompiled to C, compiled by clang for arm64, and runs on
-an iPhone 17 at 60 fps in menus and about 57 fps in arena fights, on top of a hand-written imitation of the
-Android platform.
-
 <p align="center">
-  <img src="docs/media/arena.jpg" width="49%" alt="A five-hit combo in Chen's Island Arena, all controls inside the safe area">
-  <img src="docs/media/options.jpg" width="49%" alt="The port's options sheet">
+  <img src="docs/media/icon.png" width="128" alt="Ninjago Tournament app icon">
 </p>
 
-> **No game code or data is in this repository.** You need your own copy of the Android game (version 1.05.2).
-> The translation of the game's code is generated on your machine and is never committed. This is a personal
-> preservation project, not affiliated with the LEGO Group, Warner Bros. Games, TT Games or Hellbent Games.
-
-## Why this was hard
-
-LEGO Ninjago Tournament is long gone from the stores. What survives is the Android build: a 4.4 MB stripped
-`libLEGO_M1.so` (TT Games' C++ "Fusion" engine, 32-bit ARM) plus a 974 MB asset archive. Getting that onto a
-current iPhone runs into four walls at once:
-
-| Wall | Why it matters | What this project does |
-|---|---|---|
-| **iOS has not run 32-bit code since iOS 11** | The only binary is ARMv7. Even the old iOS version of the game is 32-bit only. | Every one of the 14,118 ARM functions is translated to C ahead of time and compiled for arm64. |
-| **iOS apps cannot generate code at runtime** | No JIT, so no fast emulator. An interpreter would not hold 60 fps. | Static recompilation: the whole program is discovered and translated before the app is built. |
-| **The game expects Android** | bionic libc, pthreads, a Java VM via JNI, EGL/OpenGL ES 2, OpenSL ES, APK/OBB assets, Qualcomm-only textures. | A high-level emulation (HLE) layer implements all 208 imported functions and the Java side the engine calls back into. |
-| **Nothing to compare against** | No source code, no 32-bit iPhone, no debugger on the original. | Differential testing against the Unicorn CPU emulator: instruction by instruction, function by function, and whole-boot call traces. |
-
-## Results
-
-| | |
-|---|---|
-| Functions translated | **14,118**; 6 of them (C++ exception-unwinder helpers using iWMMXt instructions) become stubs that fail loudly; no test or play session has hit one |
-| Generated code | **3.9 million lines of C** in 64 files, compiles in about 24 s |
-| Speed on iPhone 17 | **60 fps** in menus and the dojo (1–4 ms of CPU per frame); about **57 fps** in arena fights (7–12 ms of the 16.7 ms frame budget) |
-| Checked on the device | arena fight with Invincible (`tools/device/smoke.sh --fight`): 3 of 3 runs passed, every enemy hit refilled |
-| Compared with the emulator | about **9× less CPU** than running the same game on Unicorn in the same harness |
-| Instruction-level check | **2,600** instruction shapes × 64 random CPU states, bit-exact with Unicorn (including NaN payloads) |
-| Function-level check | **293** self-contained functions with random inputs, registers *and* globals compared |
-| Test suites | 23 (CTest), plus Simulator tests for GPU behaviour |
-
-## How it works
-
-```mermaid
-flowchart LR
-    subgraph build["Build time (your Mac)"]
-        so["libLEGO_M1.so<br/>ARMv7, your copy"] --> discover["discover.py<br/>recursive descent,<br/>jump tables, callbacks"]
-        discover --> lift["lift.py<br/>one C statement block<br/>per ARM instruction"]
-        lift --> emit["emit.py<br/>functions, gotos, switches,<br/>import thunks"]
-        emit --> gen["gen/*.c<br/>3.9 M lines"]
-        gen --> clang["clang -O2<br/>arm64"]
-    end
-    subgraph app["Runtime (iPhone)"]
-        clang --> code["recompiled game code"]
-        code <--> mem["4 GiB guest address space<br/>(32-bit pointers as offsets)"]
-        code <--> hle["Android HLE<br/>libc · pthreads · JNI/Java<br/>EGL/GLES2 · OpenSL · OBB"]
-        hle --> ios["iOS: OpenGL ES (EAGL) · AudioUnit<br/>UIKit touches · files"]
-    end
-```
-
-- **Discovery** (`tools/recomp/discover.py`) walks the code from every exported symbol, constructor and callback,
-  follows calls and branches, decodes `add pc, pc, rX` jump tables and finds functions reached only through
-  pc-relative address arithmetic. Thumb code is only assumed with positive evidence.
-- **Lifting** (`lift.py`) turns each ARM instruction into C operating on a register context: conditional
-  execution, flags, shifts, VFP floating point, load/store addressing modes. Flag and addressing semantics are
-  decoded from the instruction bits instead of being trusted from the disassembler.
-- **Emitting** (`emit.py`) builds real C functions: intra-function branches become `goto`, calls become direct C
-  calls, imports go through HLE thunks, returns are checked against the link register in debug builds.
-- **The runtime** (`runtime/`) reserves a 4 GiB region so the game's 32-bit pointers stay valid as offsets, then
-  plays Android: a bionic-compatible libc, pthreads mapped to host threads, a small JNI VM that answers the
-  engine's Java calls, EGL/GLES2 forwarded to iOS OpenGL ES with shader patches, Qualcomm ATC textures decoded to
-  RGBA on upload, OpenSL ES on an AudioUnit, and the OBB zip served as the APK's asset manager.
-- **The app** (`ios/`) drives `nativeRender` from a 60 Hz display link and translates UIKit touches into
-  Android's `MotionEvent` order.
-
-## The hard parts
-
-**Trusting the CPU, not the disassembler.** Capstone reported the wrong flag behaviour for `sbc` and inconsistent
-memory-operand details. Both showed up as single failing cases in the instruction-level difftest; the lifter now
-reads the S bit and the P/U/W/I addressing bits straight from the encoding.
-
-**Finding all the code.** A stripped binary does not say where functions start. `__aeabi_uidivmod` enters in the
-middle of itself (the translation starts with a `goto`), two static constructors are Thumb code (replaced by
-byte-checked host overrides), and some callbacks exist only as `ldr rX, =offset; add rY, pc, rX`. Every one of
-these crashed the first boot and now has a regression test.
-
-**Proving equivalence without the original hardware.** Three layers: `difftest` generates every instruction shape
-the game uses and runs it with random register states on both backends; `funcdiff` runs 300 whole functions with
-the game's writable data snapshotted; `tracediff` compares every HLE call of a 600-frame boot. The main thread
-matches the emulator call for call until timing between threads diverges, which is expected: the recompiled game
-is 9× faster.
-
-**Being Android convincingly.** The engine talks to a Java activity: it asks for paths, device strings, the asset
-manager, OBB entries and analytics. `docs/java-contract.md` records the contract recovered from the decompiled
-Java side; the HLE layer answers it.
-
-**Touch is a protocol.** Android sends the first finger as `ACTION_DOWN` and further fingers as
-`ACTION_POINTER_DOWN`, and the engine resets all touch state on the first one. Mapping them the wrong way round
-made the D-pad register a new swipe whenever a second finger touched the screen.
-
-**Safe areas without black bars.** The game anchors its controls to the screen edges, which on a modern iPhone
-means under the rounded corners and the camera. The GL layer recognises the 2D overlay drawn after the 3D scene,
-draws it slightly scaled towards the centre and maps touches back, while full-screen backgrounds stay full-screen.
-
-**Three bugs that were not bugs.** The Simulator showed black floors: its software renderer mis-clips triangles
-behind the camera, the device does not. The prize draw's back button "did nothing": the game's own state machine
-only accepts back after you continue past the result, and it saves at that moment. And one launch in the Simulator
-died 9 seconds in, while the Mac was buried under Spotlight and iCloud work (load average 58). The crash report
-shows the chain: the game's OpenSL `Realize` starts the audio unit, the audio server does not answer in time, and
-Apple's AudioToolbox aborts the process on purpose (`_ReportRPCTimeout`). It is the only crash report from a day of
-hundreds of launches.
-
-## Options
-
-The port has an options sheet (slider button in the corner). Every switch uses a mechanism the shipped game
-already contains, including developer cheat bits whose setter is dead code in the release build. The full
-reverse-engineering trail is in [`docs/options.md`](docs/options.md).
+<h1 align="center">Ninjago Tournament for iOS</h1>
 
 <p align="center">
-  <img src="docs/media/characters.jpg" width="49%" alt="Character select with every character unlocked and 1,003,050 studs">
-  <img src="docs/media/menu.jpg" width="49%" alt="Main menu with the options button (top left) and the frame-rate display (top right)">
+  LEGO® NINJAGO®: Tournament, running natively on iPhone 17 and iOS 27.
 </p>
 
-| Section | Options |
-|---|---|
-| Unlock | all characters (on by default), all levels, all super moves, all red-brick extras |
-| Studs | stud multiplier off / ×2 / ×4 / ×6, never run out of studs, unlimited prize draws |
-| Easier fights | invincible, extra hearts, faster healing, double damage |
-| Display | controls inside the safe area, frame-rate display |
+<p align="center">
+  <img src="https://img.shields.io/badge/iOS-27-black?logo=apple" alt="iOS 27">
+  <img src="https://img.shields.io/badge/arch-arm64-blue" alt="arm64">
+  <img src="https://img.shields.io/badge/ARMv7%20→%20arm64-static%20recompilation-555" alt="ARMv7 to arm64 static recompilation">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
+</p>
 
-Unlocks never change the save: switch one off and the game shows your own progress again.
+<p align="center">
+  <img src="docs/media/arena.jpg" width="49%" alt="A five-hit combo in Chen's Island Arena">
+  <img src="docs/media/characters.jpg" width="49%" alt="Character select with every character unlocked">
+</p>
 
-## Building it yourself
+Ninjago Tournament stopped working on iPhones when iOS dropped 32-bit apps. This project turns the game's last
+Android release back into a native iOS app: the game's own engine code, translated ahead of time to 64-bit, with its
+original arenas, characters, music and touch controls. It installs like any other app built in Xcode and needs no
+jailbreak or emulator.
 
-You need a Mac with Xcode, CMake, Ninja, [XcodeGen](https://github.com/yonaskolb/XcodeGen) and Python 3, and your
-own copy of the Android game:
+## Features
+
+- **The original game.** The Android release's own engine code, translated function by function to native arm64,
+  so no reimplementation, no emulator and no JIT.
+- **Smooth on current iPhones.** Full 2622 × 1206 resolution on iPhone 17: 60 fps in menus and about 57 fps in
+  arena fights.
+- **Every character.** All ninjas and villains unlocked and ready in the character select.
+- **An options sheet.** All levels, super moves and red-brick extras, a stud multiplier, unlimited studs and prize
+  draws, invincibility, extra hearts, faster healing and double damage, each one a switch. They use switches the
+  game already has, and unlocks never change your save.
+- **Controls where your thumbs are.** The D-pad and buttons sit inside the rounded corners and clear of the Dynamic
+  Island, without black bars.
+- **Touch as on Android.** Several fingers at once, in Android's order, so moving and attacking together works.
+- **Saves that stay.** Progress is stored on the device and survives app updates.
+- **The original icon.** With your copy of the old iOS version, its App Store artwork becomes the app icon.
+- **Built for development.** A Simulator build, scripted test taps and a one-command test that plays an arena fight
+  on a connected iPhone.
+
+<p align="center">
+  <img src="docs/media/menu.jpg" width="49%" alt="Main menu with the options button and the frame-rate display">
+  <img src="docs/media/options.jpg" width="49%" alt="The options sheet">
+</p>
+
+## Requirements
+
+- A Mac with Xcode 27, CMake, Ninja, [XcodeGen](https://github.com/yonaskolb/XcodeGen) and Python 3
+- An iPhone with iOS 26 or later (tested on iPhone 17 with iOS 27), or the iOS Simulator
+- Your own copy of the Android game, version 1.05.2 (XAPK)
+- Optional: your copy of the original iOS version (IPA), for the app icon
 
 | File | SHA-256 |
 |---|---|
 | `ninjago-android-1.05.2.xapk` (package `com.lego.ninjago.toe`) | `2f99900b3687c6c05243f6604ab28d365312a1c21f2f01f5489aad51c1c5b96b` |
 | `lib/armeabi-v7a/libLEGO_M1.so` from its `base.apk` | `0125c9766168a80d8ee84348d4028382f326d4a8ea5f6f1d8250a434fc1e69b3` |
+| `ninjago-ios-1.1.70250.ipa` (optional) | `880a6e5c60b06243165e4cc56ed19d6de3d30ad2913aa2988760d5e6b86733d0` |
+
+## Getting started
 
 ```sh
 # 1. Your game files (git-ignored)
 mkdir -p input/extracted && unzip ninjago-android-1.05.2.xapk -d input/extracted
 unzip -o input/extracted/base.apk 'lib/armeabi-v7a/libLEGO_M1.so' -d input/extracted
-#    -> input/extracted/lib/armeabi-v7a/libLEGO_M1.so
-#    -> input/extracted/Android/Obb/com.lego.ninjago.toe/main.1057.com.lego.ninjago.toe.obb
+cp ninjago-ios-1.1.70250.ipa input/          # optional: the original app icon
 
-# 2. Tools, translation and tests
+# 2. Build the recompiled game and run the tests
 python3 -m venv tools/.venv && tools/.venv/bin/pip install -r tools/requirements.txt
 cmake -S . -B build -G Ninja && cmake --build build && (cd build && ctest)
 
-# 3. Run it in the Simulator
+# 3. Play: in the Simulator, or on your iPhone (set DEVELOPMENT_TEAM in ios/project.yml first)
 tools/sim/run_sim.sh 0
-
-# 4. On an iPhone: generate the project, open it, pick your team, run the NinjagoPhone scheme
-(cd ios && xcodegen generate) && open ios/Ninjago.xcodeproj
+(cd ios && xcodegen generate) && open ios/Ninjago.xcodeproj    # run the NinjagoPhone scheme
 ```
 
-The phone build bundles your `.so` and `.obb`, so it stays on your own devices.
+The app is built from your files on your Mac and installed on your own devices. `tools/device/smoke.sh` checks an
+installed iPhone build without touching your save: it plays from the main menu into the dojo, or with `--fight` into
+an arena fight.
 
-`tools/device/smoke.sh` checks an installed phone build end to end without touching your own save: it starts the
-app with a test save in its temporary folder and taps through the menus. By default it plays from a fresh save into
-the dojo and passes when the game booted, the player exists and the frame rate is at least 55 fps. With
-`--fight SAVE` it starts from a save past the tutorial, switches Invincible on for that run only and goes into
-Chen's Island Arena, where it also checks that every enemy hit is refilled.
+## How it works
 
-## Repository map
+The Android release is TT Games' C++ engine, compiled for 32-bit ARM. This project translates that machine code into
+C once, on your Mac, and gives it a stand-in for Android to talk to.
 
-| Path | What |
+```mermaid
+flowchart LR
+    so["Android game<br/>32-bit ARM library"] --> recomp["Recompiler<br/>ARM → C"]
+    recomp --> clang["clang<br/>arm64"]
+    clang --> app["Ninjago.app"]
+    hle["Android stand-in<br/>libc · threads · Java · GL ES · audio"] --> app
+    obb["Game data<br/>OBB archive"] --> app
+```
+
+- **Game code**: all 14,118 functions of the ARM library are translated to C ahead of time and compiled by clang for
+  arm64. The translation is checked instruction by instruction against a CPU emulator.
+- **Android stand-in**: the 208 functions the game imports (libc, threads, OpenGL ES, OpenSL ES) and the Java calls
+  it makes are answered by a runtime written for this project.
+- **Graphics and touch**: OpenGL ES 2 goes to iOS's OpenGL ES with shader fixes and texture conversion; touches
+  arrive in Android's order.
+- **Options**: switches the shipped game already contains, set once per frame.
+
+The technical notes cover every step, the numbers and the problems found on the way:
+[`docs/technical-notes.md`](docs/technical-notes.md).
+
+## Status
+
+| | |
 |---|---|
-| `tools/recomp/` | the static recompiler (discovery, lifter, emitter) |
-| `runtime/` | guest memory, ELF loader, HLE layer, the AOT backend and the Unicorn backend used for testing |
+| iPhone 17, iOS 27 | Plays: menus, dojo, arena fights, prize draw, saves. Arena fight test passed 3 of 3 at about 57 fps |
+| iOS Simulator | Runs for development (renders at 1× because the Simulator draws OpenGL ES in software) |
+| Next | More tournament levels played through on the device |
+
+## Project layout
+
+| Path | Contents |
+|---|---|
+| `tools/recomp/` | the static recompiler: function discovery, instruction lifting, C emission |
+| `runtime/` | guest memory, ELF loader, the Android stand-in, the arm64 backend and an emulator backend for testing |
 | `harness/` | Android-style boot sequence, frame and touch entry points, the options (`cheats.c`) |
-| `ios/` | the iOS app (Objective-C): GL view, touches, audio, options sheet |
-| `tests/` | unit tests, `difftest/`, `funcdiff/` |
-| `docs/` | Java contract, device memory probe, milestone reports, options, design and plan |
+| `ios/` | the iOS app: GL view, touches, audio, options sheet |
+| `tools/sim/`, `tools/device/` | Simulator runs and the iPhone smoke test |
+| `tests/` | unit tests and the differential test rigs |
+| `docs/` | [technical notes](docs/technical-notes.md), [options](docs/options.md), [Java contract](docs/java-contract.md), [design](docs/design/), screenshots |
 
-## License and credits
+## Legal
 
-The code in this repository is MIT licensed, see [LICENSE](LICENSE); third-party components are listed in
-[THIRD_PARTY.md](THIRD_PARTY.md). LEGO, the LEGO logo and NINJAGO are trademarks of the LEGO Group. The game
-belongs to its rights holders and is not included.
+This repository contains only original tooling. No game code or game data is included, and nothing generated from
+them is committed: you need your own copy of the game. This is a personal preservation project and is not
+affiliated with or endorsed by the LEGO Group, Warner Bros. Games, TT Games or Hellbent Games. LEGO, the LEGO logo
+and NINJAGO are trademarks of the LEGO Group. Third-party components are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-Built by **Miró Waltisberg**, with [Claude Code](https://claude.com/claude-code) as pair programmer.
+## Credits
+
+Made by **Miró Waltisberg**. Code under the [MIT license](LICENSE).
+
+Also by Miró: [**Yoda Chronicles for iOS**](https://github.com/mirowaltisberg/yoda-chronicles-recomp).

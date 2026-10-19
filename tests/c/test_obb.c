@@ -30,7 +30,7 @@ static void make_zip(const char *path, const char *name, uint16_t method, const 
 }
 
 NJ_TEST(obb_local_extra) {
-    char path[] = "/tmp/claude-501-njzipXXXXXX";
+    char path[] = "/tmp/nj-zipXXXXXX";
     close(mkstemp(path));
     make_zip(path, "music\\a.mp3", 0, "ID3 rest-of-file", 9);
     NjObbEntry *e = NULL;
@@ -50,7 +50,7 @@ NJ_TEST(obb_local_extra) {
 }
 
 NJ_TEST(obb_rejects_deflate) {
-    char path[] = "/tmp/claude-501-njzipXXXXXX";
+    char path[] = "/tmp/nj-zipXXXXXX";
     close(mkstemp(path));
     make_zip(path, "a.bin", 8, "xxxx", 0);
     NjObbEntry *e = NULL;

@@ -4,6 +4,7 @@
 name: Ninjago
 options:
   bundleIdPrefix: ch.mirowaltisberg
+  preGenCommand: ../tools/make_icon.sh # app icon from your own IPA into build/assets (run xcodegen inside ios/)
   deploymentTarget:
     iOS: "26.0"
 settings:
@@ -27,6 +28,7 @@ settings:
     INFOPLIST_KEY_CFBundleDisplayName: "Ninjago"
     INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.action-games"
     PRODUCT_BUNDLE_IDENTIFIER: ch.mirowaltisberg.ninjago
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 targetTemplates:
   Game:
     type: application
@@ -34,6 +36,7 @@ targetTemplates:
     sources:
       - path: App
       - path: Platform
+      - path: ../build/assets/Assets.xcassets
       - path: ../runtime/src
       - path: ../runtime/backend/aot
       - path: ../build/gen

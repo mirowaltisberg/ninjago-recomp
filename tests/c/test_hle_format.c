@@ -157,7 +157,7 @@ NJ_TEST(strftime_tm) {
 
 NJ_TEST(android_log_to_file) {
     setup();
-    char path[] = "/tmp/claude-501-njlogXXXXXX";
+    char path[] = "/tmp/nj-logXXXXXX";
     int fd = mkstemp(path);
     close(fd);
     nj_log_set_file(path);
