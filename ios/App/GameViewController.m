@@ -255,6 +255,7 @@ static const char *env_or(const char *name, NSString *fallback) {
 - (void)pauseGame {
     if (!_booted || _paused) return;
     _paused = YES;
+    NSLog(@"[ninjago] paused (app in the background)");
     [EAGLContext setCurrentContext:_ctx];
     nj_pause();
 }
@@ -262,6 +263,7 @@ static const char *env_or(const char *name, NSString *fallback) {
 - (void)resumeGame {
     if (!_booted || !_paused) return;
     _paused = NO;
+    NSLog(@"[ninjago] resumed");
     [EAGLContext setCurrentContext:_ctx];
     nj_resume();
     nj_ios_audio_resume();
