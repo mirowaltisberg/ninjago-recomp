@@ -5,7 +5,7 @@ at runtime, no JIT: the game's ARMv7 engine is statically recompiled to C, compi
 an iPhone 17 at 60 fps on top of a hand-written imitation of the Android platform.
 
 <p align="center">
-  <img src="docs/media/gameplay.jpg" width="49%" alt="Gameplay in the dojo, all controls inside the safe area">
+  <img src="docs/media/arena.jpg" width="49%" alt="A five-hit combo in Chen's Island Arena, all controls inside the safe area">
   <img src="docs/media/options.jpg" width="49%" alt="The port's options sheet">
 </p>
 
@@ -111,7 +111,10 @@ The port has an options sheet (slider button in the corner). Every switch uses a
 already contains, including developer cheat bits whose setter is dead code in the release build. The full
 reverse-engineering trail is in [`docs/options.md`](docs/options.md).
 
-<p align="center"><img src="docs/media/menu.jpg" width="70%" alt="Main menu with the options button (top left) and the frame-rate display (top right)"></p>
+<p align="center">
+  <img src="docs/media/characters.jpg" width="49%" alt="Character select with every character unlocked and 1,003,050 studs">
+  <img src="docs/media/menu.jpg" width="49%" alt="Main menu with the options button (top left) and the frame-rate display (top right)">
+</p>
 
 | Section | Options |
 |---|---|
