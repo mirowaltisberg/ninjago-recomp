@@ -155,6 +155,10 @@ tools/sim/run_sim.sh 0
 
 The phone build bundles your `.so` and `.obb`, so it stays on your own devices.
 
+`tools/device/smoke.sh` checks an installed phone build end to end: it starts the app with a fresh test save (your
+own save is not touched), taps through the menus into the dojo and passes when the game booted, the player exists
+and the frame rate is at least 55 fps.
+
 ## Repository map
 
 | Path | What |
