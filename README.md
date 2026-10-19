@@ -2,7 +2,8 @@
 
 **A 32-bit Android game, translated function by function into native 64-bit iOS code.** No source code, no emulator
 at runtime, no JIT: the game's ARMv7 engine is statically recompiled to C, compiled by clang for arm64, and runs on
-an iPhone 17 at 60 fps on top of a hand-written imitation of the Android platform.
+an iPhone 17 at 60 fps in menus and about 57 fps in arena fights, on top of a hand-written imitation of the
+Android platform.
 
 <p align="center">
   <img src="docs/media/arena.jpg" width="49%" alt="A five-hit combo in Chen's Island Arena, all controls inside the safe area">
@@ -32,7 +33,8 @@ current iPhone runs into four walls at once:
 |---|---|
 | Functions translated | **14,118**; 6 of them (C++ exception-unwinder helpers using iWMMXt instructions) become stubs that fail loudly; no test or play session has hit one |
 | Generated code | **3.9 million lines of C** in 64 files, compiles in about 24 s |
-| Speed on iPhone 17 | **60 fps**, about 1–4 ms of CPU per frame |
+| Speed on iPhone 17 | **60 fps** in menus and the dojo (1–4 ms of CPU per frame); about **57 fps** in arena fights (7–12 ms of the 16.7 ms frame budget) |
+| Checked on the device | arena fight with Invincible (`tools/device/smoke.sh --fight`): 3 of 3 runs passed, every enemy hit refilled |
 | Compared with the emulator | about **9× less CPU** than running the same game on Unicorn in the same harness |
 | Instruction-level check | **2,600** instruction shapes × 64 random CPU states, bit-exact with Unicorn (including NaN payloads) |
 | Function-level check | **293** self-contained functions with random inputs, registers *and* globals compared |
