@@ -22,7 +22,12 @@ NSNotificationName const NJOptionsDidChange = @"NJOptionsDidChange";
     [NSUserDefaults.standardUserDefaults registerDefaults:@{NJOptionAllCharacters : @YES, NJOptionSafeArea : @YES}];
 }
 
-+ (BOOL)boolForKey:(NSString *)key { return [NSUserDefaults.standardUserDefaults boolForKey:key]; }
+/* NJ_OPTIONS=key,key (developer testing): these switches are on for this run, without being stored */
++ (BOOL)boolForKey:(NSString *)key {
+    const char *forced = getenv("NJ_OPTIONS");
+    if (forced && [[@(forced) componentsSeparatedByString:@","] containsObject:key]) return YES;
+    return [NSUserDefaults.standardUserDefaults boolForKey:key];
+}
 + (NSInteger)integerForKey:(NSString *)key { return [NSUserDefaults.standardUserDefaults integerForKey:key]; }
 
 + (void)setValue:(id)value forOption:(NSString *)key {

@@ -195,11 +195,23 @@ static const char *env_or(const char *name, NSString *fallback) {
     static NjBootConfig cfg;
     cfg.so_path = strdup(env_or("NJ_SO", [bundle stringByAppendingPathComponent:@"libLEGO_M1.so"]));
     cfg.obb_path = strdup(env_or("NJ_OBB", [bundle stringByAppendingPathComponent:@"main.1057.com.lego.ninjago.toe.obb"]));
-    /* NJ_SANDBOX (developer testing): start from a fresh save in the temporary folder instead of the player's */
+    /* NJ_SANDBOX (developer testing): start from a fresh save in the temporary folder instead of the player's;
+     * NJ_SAVE_SEED names a save file in the temporary folder to start from instead (only with NJ_SANDBOX, so the
+     * player's own save is never overwritten) */
     const char *test_sandbox = getenv("NJ_SANDBOX");
     if (test_sandbox && *test_sandbox) {
+        NSFileManager *fm = NSFileManager.defaultManager;
         docs = [NSTemporaryDirectory() stringByAppendingPathComponent:@(test_sandbox)];
-        [NSFileManager.defaultManager removeItemAtPath:docs error:nil];
+        [fm removeItemAtPath:docs error:nil];
+        const char *seed = getenv("NJ_SAVE_SEED");
+        if (seed && *seed) {
+            NSString *files = [docs stringByAppendingPathComponent:@"files"];
+            [fm createDirectoryAtPath:files withIntermediateDirectories:YES attributes:nil error:nil];
+            NSError *err = nil;
+            if (![fm copyItemAtPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@(seed)]
+                             toPath:[files stringByAppendingPathComponent:@"savegame.dat"] error:&err])
+                NSLog(@"[ninjago] NJ_SAVE_SEED %s: %@", seed, err.localizedDescription);
+        }
     }
     cfg.sandbox_dir = strdup(docs.UTF8String);
     cfg.width = _w;
@@ -219,6 +231,9 @@ static const char *env_or(const char *name, NSString *fallback) {
         p = strchr(p, ';');
         if (p) p++;
     }
+    /* NJ_KEEP_AWAKE (developer testing): no auto-lock while an automated run plays without touches; the game itself,
+     * like the Android original, lets the phone lock */
+    if (getenv("NJ_KEEP_AWAKE")) UIApplication.sharedApplication.idleTimerDisabled = YES;
     _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(frame:)];
     _link.preferredFrameRateRange = CAFrameRateRangeMake(60, 60, 60);
     [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
