@@ -53,7 +53,7 @@
 ### Task 1a: iOS address-space probe (runs in parallel with M0; can change the memory-map constants)
 
 **Files:**
-- Create: `probe/ios-vaprobe/` (a minimal Objective-C iOS app: on launch it `mmap`s 4 GiB `PROT_NONE`, `mprotect`s and writes one byte at offsets `0x02000000`, `0xE0000000`, `0xF0000000` and `0xFFFF0000`, and shows/logs the result per offset), with two build configurations: with and without the entitlement `com.apple.developer.kernel.extended-virtual-addressing`. Signed with Team `4DFJ7R72MG`.
+- Create: `probe/ios-vaprobe/` (a minimal Objective-C iOS app: on launch it `mmap`s 4 GiB `PROT_NONE`, `mprotect`s and writes one byte at offsets `0x02000000`, `0xE0000000`, `0xF0000000` and `0xFFFF0000`, and shows/logs the result per offset), with two build configurations: with and without the entitlement `com.apple.developer.kernel.extended-virtual-addressing`. Signed with Team `43DHLG947A`.
 
 - [ ] **Step 1:** Build both configurations and install on Miró's iPhone 17 (`xcrun devicectl device install app …`); also run in the Simulator.
 - [ ] **Step 2:** Record the results in `docs/ios-vaprobe.md`. If the 4 GiB reservation fails without the entitlement but works with it, M6 keeps that entitlement. If it fails in both, shrink the heap (`NJ_HEAP_SIZE`) and move stacks and thunks down until it fits, update the Global Constraints, then continue.
@@ -397,9 +397,137 @@
 - [ ] **Step 3:** Acceptance: the AOT run meets the Task 16 acceptance criteria. The main-thread trace matches Unicorn up to the first divergence that is explained by thread timing (documented in `docs/m2-aot-report.md`). Report AOT frames per second headless versus Unicorn.
 - [ ] **Step 4: Commit** `feat(aot): whole-library build boots headless`.
 
+## Milestones M3–M4 (detailed): playable build in the iOS Simulator on the Unicorn backend
+
+Order change (ledgered ruling): the Simulator allows JIT at runtime (`pthread_jit_write_protect_np` resolves via `dlsym`,
+`MAP_JIT` works; probe run 18.10.2026 returned 42 from generated code), and Unicorn 2.1.4 builds for
+`iphonesimulator` with a 10-line patch. All 10 `test_uc_backend` tests pass inside the Simulator. So M3/M4 run on
+Unicorn in the Simulator first; M2 (AOT) remains required for the phone (M6) and continues afterwards.
+
+Global additions:
+- iOS builds define `GLES_SILENCE_DEPRECATION=1`, link `OpenGLES`, `QuartzCore`, `UIKit`, `AudioToolbox`,
+  `AVFAudio`, `CoreFoundation`, deployment target iOS 26.0, Team `43DHLG947A`, bundle id `ch.mirowaltisberg.ninjago`.
+- Dev builds read the guest library and OBB from host paths given in the launch environment
+  (`NJ_SO`, `NJ_OBB`; the Simulator can read the host file system). Device packaging is M6.
+- The app uses the UIScene life cycle (required by the iOS 27 SDK, see `docs/ios-vaprobe.md`).
+
+### Task 24: Unicorn for the Simulator
+
+**Files:**
+- Create: `tools/unicorn/sim-jit.patch`, `tools/unicorn/build_unicorn_sim.sh` (downloads
+  `https://github.com/unicorn-engine/unicorn/archive/refs/tags/2.1.4.tar.gz`, verifies sha256
+  `ea8863f095a0136388694e5a6063afd9bb7650e30243dd6251af59c5ce5601f4`, applies the patch, configures with
+  `-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_ARCHITECTURES=arm64
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 -DUNICORN_ARCH=arm -DBUILD_SHARED_LIBS=OFF -DUNICORN_BUILD_TESTS=OFF
+  -DUNICORN_INSTALL=OFF -DCMAKE_BUILD_TYPE=Release`, output `build/unicorn-sim/` with `libunicorn.a`,
+  `libarm-softmmu.a`, `libunicorn-common.a` and the headers), `tools/sim/run_sim_test.sh NAME` (builds one test
+  executable from `tests/c/NAME.c` for the Simulator against the runtime + Unicorn libs and runs it with
+  `xcrun simctl spawn <booted device>`).
+
+- [ ] **Step 1:** Run `tools/sim/run_sim_test.sh test_uc_backend` before the patch exists. Expect FAIL (build error
+  `'pthread_jit_write_protect_np' is unavailable`).
+- [ ] **Step 2:** Add the patch: in `qemu/include/tcg/tcg-apple-jit.h`, under `TARGET_OS_SIMULATOR`, include
+  `<pthread.h>` and redirect `pthread_jit_write_protect_np`/`pthread_jit_write_protect_supported_np` to static
+  inline wrappers that resolve the real functions with `dlsym(RTLD_DEFAULT, …)`.
+- [ ] **Step 3:** Run `tools/sim/run_sim_test.sh test_uc_backend` and `… test_hle_libc_core`. Expect `0 failed`.
+- [ ] **Step 4: Commit** `build(sim): Unicorn for the iOS Simulator`.
+
+### Task 25: ATC texture decoding
+
+**Files:**
+- Create: `runtime/src/texture_atc.c`, `runtime/include/nj/texture.h`, `tests/c/test_texture_atc.c`
+- Modify: `runtime/src/hle_gles.c`
+
+**Interfaces:**
+- Produces: `int nj_atc_format(uint32_t internalformat);` (1 for `0x8C92` ATC_RGB_AMD, `0x8C93`
+  ATC_RGBA_EXPLICIT_ALPHA_AMD, `0x87EE` ATC_RGBA_INTERPOLATED_ALPHA_AMD) `size_t nj_atc_size(uint32_t fmt, int w, int h);`
+  `void nj_atc_decode(uint32_t fmt, int w, int h, const uint8_t *src, uint8_t *rgba);` (RGBA8 row-major, w×h,
+  partial edge blocks clipped). `hle_gles.c`: when `nj_gles_decode_atc` is true (default on iOS, off headless so the
+  stub still reports formats), `glCompressedTexImage2D` with an ATC format decodes and calls
+  `glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba)`.
+- Block layout (bimg `decodeBlockAtc`): colour block = c0 (u16, RGB555, bit 15 = mode), c1 (u16, RGB565),
+  32-bit 2-bit indices LSB-first. Mode 0: palette {c0, (5·c0+3·c1)/8, (3·c0+5·c1)/8, c1}. Mode 1: palette
+  {0, max(0, c0 − c1/4), c0, c1}. Expand 5→8 and 6→8 bits by bit replication. RGBA explicit = 64-bit of 4-bit
+  alphas (row-major, low nibble first) then a colour block. RGBA interpolated = DXT5-style alpha block (a0, a1, 48-bit
+  3-bit indices; a0 > a1: 8 interpolated values, else 6 + 0 + 255) then a colour block.
+
+- [ ] **Step 1: Write failing tests:** `atc_rgb_mode0_solid` (c0 = c1 = pure red (RGB555 0x7C00 / RGB565 0xF800), indices 0 → all
+  pixels 255,0,0,255); `atc_rgb_mode1_black` (c0 with bit 15 set, index 0 → black); `atc_palette_mid` (mode 0, c0 white,
+  c1 black, index 1 → (5·255+0)/8 = 159); `atc_rgba_interp_alpha` (a0 = 255, a1 = 0, index 7 → alpha 0, index 0 → 255);
+  `atc_edge_clip` (5×3 image decodes without writing beyond 5×3×4 bytes, checked with a guard byte);
+  `atc_sizes` (`nj_atc_size(0x8C92, 8, 8) == 32`, `nj_atc_size(0x87EE, 8, 8) == 64`).
+- [ ] **Step 2:** Run ctest. Expect FAIL.
+- [ ] **Step 3:** Implement `texture_atc.c` and the `hle_gles.c` hook.
+- [ ] **Step 4:** Run ctest. Expect PASS.
+- [ ] **Step 5: Commit** `feat(gles): software ATC decoding`.
+
+### Task 26: iOS platform layer (contexts, default framebuffer, audio output)
+
+**Files:**
+- Create: `ios/Platform/NJPlatformIOS.m` (implements `nj/platform.h` and `nj_audio_output_start`),
+  `ios/Platform/NJPlatformIOS.h`
+- Modify: `runtime/include/nj/platform.h` (add `unsigned nj_platform_default_framebuffer(void);`, 0 headless),
+  `runtime/src/hle_gles.c`, `runtime/headless/platform_headless.c`, `tests/c/test_hle_gles.c`
+
+**Interfaces:**
+- `NJPlatformIOS.h`: `void nj_ios_set_main_context(EAGLContext *ctx, GLuint framebuffer, int width, int height);`
+- Contexts: id 1 = the main `EAGLContext` (ES2). `nj_platform_create_context(share)` creates an ES2 context in the same
+  `EAGLSharegroup`; `nj_platform_make_current(id)` calls `[EAGLContext setCurrentContext:]` on the calling thread
+  (the engine's loader thread uses the shared context via `eglMakeCurrent`).
+- Default framebuffer: Android renders the final image to framebuffer 0; iOS has no default framebuffer. In
+  `hle_gles.c`, `glBindFramebuffer(GL_FRAMEBUFFER, 0)` binds `nj_platform_default_framebuffer()`, and
+  `glGetIntegerv(GL_FRAMEBUFFER_BINDING)` reports 0 when the platform framebuffer is bound.
+- Audio: `nj_audio_output_start` creates a RemoteIO `AudioUnit` (44.1 kHz, float, 2 ch, interleaved) whose render
+  callback calls `nj_audio_mix`; `AVAudioSession` category `playback`.
+
+- [ ] **Step 1: Write failing test** in `test_hle_gles.c`: `gl_default_framebuffer_mapping` (headless platform returns 77
+  from a test override `nj_headless_set_default_framebuffer(77)`: `glBindFramebuffer(GL_FRAMEBUFFER, 0)` → stub sees
+  77; `glGetIntegerv(GL_FRAMEBUFFER_BINDING)` through the thunk returns 0; binding 5 → stub sees 5 and the query returns 5).
+- [ ] **Step 2:** Run ctest. Expect FAIL.
+- [ ] **Step 3:** Implement the mapping in `hle_gles.c` and the headless setter; implement `NJPlatformIOS.m` (exercised in
+  Task 27).
+- [ ] **Step 4:** Run ctest. Expect PASS.
+- [ ] **Step 5: Commit** `feat(ios): platform layer for contexts, default framebuffer and audio`.
+
+### Task 27: iOS app shell
+
+**Files:**
+- Create: `ios/project.yml` (xcodegen; app target `Ninjago`, sources: `ios/App`, `ios/Platform`, `runtime/src`,
+  `runtime/backend/unicorn`, `runtime/third_party/dlmalloc/malloc.c` and `runtime/third_party/minimp3/minimp3_impl.c`
+  with `-w` and the dlmalloc defines, `harness/boot.c`; header paths `runtime/include`, `runtime/third_party`,
+  `harness`, `build/unicorn-sim/include`; libraries from `build/unicorn-sim`; landscape only; status bar hidden),
+  `ios/App/main.m`, `ios/App/AppDelegate.m`, `ios/App/SceneDelegate.m`, `ios/App/GameViewController.m`,
+  `ios/App/GameView.m` (CAEAGLLayer view), `tools/sim/run_sim.sh` (build Unicorn if needed, xcodegen, xcodebuild for the
+  booted Simulator, install, launch with `SIMCTL_CHILD_NJ_SO`/`SIMCTL_CHILD_NJ_OBB`, wait N seconds, save
+  `xcrun simctl io booted screenshot build/sim-shot.png`)
+
+**Interfaces:**
+- `GameViewController` owns the `EAGLContext`, a colour renderbuffer from the layer, a 24/8 depth-stencil renderbuffer
+  and framebuffer, calls `nj_ios_set_main_context`, then `nj_boot` on the main thread with `sandbox_dir` = app
+  Documents, `width/height` = drawable pixels, then a `CADisplayLink` at 60 Hz calling `nj_frame()` and
+  `presentRenderbuffer:`. Touches: `touchesBegan/Moved/Ended/Cancelled` → `nj_touch` with stable pointer ids
+  (first free id per `UITouch`, Android semantics: first finger down = kind 0, further fingers = kind 4, non-last up =
+  kind 5, last up = kind 2, cancel = kind 3), coordinates in pixels (`location × contentScaleFactor`). Scene
+  background/foreground → `nj_pause`/`nj_resume`.
+
+- [ ] **Step 1:** Implement the shell and `run_sim.sh`.
+- [ ] **Step 2:** Run `tools/sim/run_sim.sh 25`. Expect: the app launches without a fatal, the log shows the boot
+  timings, and `build/sim-shot.png` shows the game's first screen (not black).
+- [ ] **Step 3:** If black or wrong: debug with the HLE trace (`SIMCTL_CHILD_NJ_TRACE`), the shader info logs and
+  `glGetError` checks; every fix gets a unit test in the owning module. Record fixes in `docs/m3-sim-report.md`.
+- [ ] **Step 4: Commit** `feat(ios): Simulator app shell`.
+
+### Task 28: Playable in the Simulator (M4 acceptance)
+
+- [ ] **Step 1:** With the Simulator, tap through to the main menu and the character selection; confirm music and sound
+  effects play (Mac speakers) and touch targets match the drawn buttons. Fix input/audio issues test-first.
+- [ ] **Step 2:** Screenshots of title, menu and character selection into `docs/m3-sim-report.md` (local only;
+  screenshots of the game stay out of git) and send them to Miró.
+- [ ] **Step 3: Commit** `docs: M3/M4 Simulator report`.
+
 ## Milestones M3–M6 (outline; detailed plan written after M2)
 
 - **M3: iOS shell, first frames (Simulator).** `ios/` Xcode project (generated with CMake `-G Xcode -DCMAKE_SYSTEM_NAME=iOS`, or xcodegen), Objective-C `AppDelegate` + `GameViewController` with a `CAEAGLLayer` view, an ES3 `EAGLContext` (ES2 shaders run unchanged, and ETC2-compatible ETC1 upload works), `CADisplayLink` → `nj_frame()`, `nj_platform_present` → `presentRenderbuffer`, the OBB bundled from `input/` by a build phase, the sandbox in `Documents/`. Link `hle_gles.c` against OpenGLES.framework instead of the stub. Texture path decided by the M1 report (native or software decode in `hle_gles.c`). Acceptance: title/loading screen visible in the Simulator, screenshot sent to Miró.
 - **M4: Input and audio.** `UITouch` → `nativeTouchEventDown/Move/Up/CancelAll` with stable pointer IDs and pixel coordinates (java-contract §5). `audio.h` implemented on `AVAudioEngine` (per-stream `AVAudioPlayerNode` fed from consumed PCM, or one mixing AudioUnit). Interruptions and route changes handled. Acceptance: menus navigable, music and sound effects audible.
 - **M5: Gameplay, unlocks, saves.** Reach character selection and Chen's arena. Unlock all characters via save edit or a symbol override (investigate the `geSave_*` and character-unlock functions by name). If the tutorial is forced and broken, bypass it with `gdv_Tutorial_Enabled` or a save flag. Verify saves persist across relaunch. Acceptance: Miró plays a full arena run with any character in the Simulator.
-- **M6: Device.** Signing with Team `4DFJ7R72MG` (Apple Development: Miró Maximilian Waltisberg), bundle ID under Miró's prefix, entitlements `com.apple.developer.kernel.extended-virtual-addressing` and `com.apple.developer.kernel.increased-memory-limit` (for the 4 GiB reservation). Install on the iPhone 17 via Xcode/`devicectl`. Performance profile in Instruments, lifecycle (background/foreground → `nativePause/Resume`), safe area and aspect ratio. Acceptance: smooth play on the phone.
+- **M6: Device.** Signing with Team `43DHLG947A` (Apple Development: Miró Maximilian Waltisberg), bundle ID under Miró's prefix, entitlements `com.apple.developer.kernel.extended-virtual-addressing` and `com.apple.developer.kernel.increased-memory-limit` (for the 4 GiB reservation). Install on the iPhone 17 via Xcode/`devicectl`. Performance profile in Instruments, lifecycle (background/foreground → `nativePause/Resume`), safe area and aspect ratio. Acceptance: smooth play on the phone.

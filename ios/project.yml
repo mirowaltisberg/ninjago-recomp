@@ -1,0 +1,68 @@
+# Xcode project (xcodegen). Both targets run the guest library recompiled ahead of time (build/gen, produced
+# by the CMake build: `cmake --build build --target nj_guest_aot`). The Simulator target reads the game files
+# from input/ (paths passed by tools/sim/run_sim.sh); the phone target bundles them.
+name: Ninjago
+options:
+  bundleIdPrefix: ch.mirowaltisberg
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 43DHLG947A
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CLANG_ENABLE_OBJC_ARC: YES
+    GCC_C_LANGUAGE_STANDARD: gnu11
+    GCC_OPTIMIZATION_LEVEL: "2"
+    GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "GLES_SILENCE_DEPRECATION=1", "NJ_AOT_CHECKS=1"]
+    HEADER_SEARCH_PATHS: ["$(SRCROOT)/../runtime/include", "$(SRCROOT)/../runtime/third_party", "$(SRCROOT)/../harness",
+                          "$(SRCROOT)/../runtime/backend/aot", "$(SRCROOT)/../build/gen"]
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+    INFOPLIST_KEY_UIStatusBarHidden: YES
+    INFOPLIST_KEY_UIRequiresFullScreen: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    INFOPLIST_KEY_CFBundleDisplayName: "Ninjago"
+    INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.action-games"
+    PRODUCT_BUNDLE_IDENTIFIER: ch.mirowaltisberg.ninjago
+targetTemplates:
+  Game:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Platform
+      - path: ../runtime/src
+      - path: ../runtime/backend/aot
+      - path: ../build/gen
+        compilerFlags: ["-Wno-unused-variable", "-Wno-unused-but-set-variable", "-Wno-unused-label"]
+      - path: ../harness/boot.c
+      - path: ../harness/cheats.c
+      - path: ../runtime/third_party/dlmalloc/malloc.c
+        compilerFlags: ["-w", "-DONLY_MSPACES=1", "-DMSPACES=1", "-DUSE_LOCKS=1", "-DHAVE_MMAP=0", "-DHAVE_MORECORE=0"]
+      - path: ../runtime/third_party/minimp3/minimp3_impl.c
+        compilerFlags: ["-w"]
+    dependencies:
+      - sdk: OpenGLES.framework
+      - sdk: QuartzCore.framework
+      - sdk: AudioToolbox.framework
+      - sdk: AVFAudio.framework
+      - sdk: CoreFoundation.framework
+targets:
+  Ninjago:
+    templates: [Game]
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: iphonesimulator
+  NinjagoPhone:
+    templates: [Game]
+    sources:
+      - path: ../input/extracted/lib/armeabi-v7a/libLEGO_M1.so
+        buildPhase: resources
+      - path: ../input/extracted/Android/Obb/com.lego.ninjago.toe/main.1057.com.lego.ninjago.toe.obb
+        buildPhase: resources
+    settings:
+      base:
+        SUPPORTED_PLATFORMS: iphoneos

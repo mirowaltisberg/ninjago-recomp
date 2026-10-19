@@ -1,0 +1,31 @@
+--- a/qemu/include/tcg/tcg-apple-jit.h	2025-09-09 18:38:25
++++ b/qemu/include/tcg/tcg-apple-jit.h	2026-10-18 22:41:45
+@@ -25,6 +25,28 @@
+ #ifndef TCG_APPLE_JIT_H
+ #define TCG_APPLE_JIT_H
+ 
++/* iOS Simulator: the JIT write-protect API exists at runtime but the iOS SDK marks it
++ * unavailable, so resolve it dynamically (ninjago-recomp, dev builds only). */
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#if TARGET_OS_SIMULATOR
++#include <dlfcn.h>
++#include <pthread.h>
++static inline void nj_sim_jit_write_protect(int enabled) {
++    static void (*f)(int);
++    if (!f) f = (void (*)(int))dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np");
++    if (f) f(enabled);
++}
++static inline int nj_sim_jit_supported(void) {
++    static int (*f)(void);
++    if (!f) f = (int (*)(void))dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_supported_np");
++    return f ? f() : 0;
++}
++#define pthread_jit_write_protect_np nj_sim_jit_write_protect
++#define pthread_jit_write_protect_supported_np nj_sim_jit_supported
++#endif
++#endif
++
+ #include "assert.h"
+ #include "stdint.h"
+ #include "stdbool.h"

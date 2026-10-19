@@ -1,0 +1,48 @@
+/* EGL and OpenGL ES 2 thunks for the guest. */
+#ifndef NJ_GLES_H
+#define NJ_GLES_H
+
+#include <stdbool.h>
+#include <stdio.h>
+
+/* All GL imports + OES vertex array functions (reachable through eglGetProcAddress). */
+void hle_gles_register(void);
+/* eglBindAPI eglChooseConfig eglCreateContext eglCreatePbufferSurface eglGetCurrent* eglGetError
+ * eglGetProcAddress eglMakeCurrent eglSwapInterval. */
+void hle_egl_register(void);
+/* Declare that the calling thread has the main context and window surface current (the host does
+ * this on its render thread before nativeInit, like Android's GL thread). */
+void nj_egl_set_current_main(void);
+/* Guest EGLConfig handle (also stored in the EGLConfig Java object's mEGLConfig field). */
+unsigned nj_egl_config_handle(void);
+
+/* Returns a malloc'd copy of a guest shader made safe for Apple's IEEE renderers: normalize() of a zero vector
+ * yields zero instead of NaN (which would black out whole triangles). */
+char *nj_glsl_patch(const char *src);
+
+/* Shrink the 2D overlay (controls, HUD) drawn over the composited 3D scene towards the screen centre by s
+ * (0 < s <= 1) so it clears rounded corners and the camera cutout; the scene itself stays full screen.
+ * Frames without a composited scene (menus) are left alone. Screen size in pixels. */
+void nj_gles_set_hud_scale(float s, int screen_w, int screen_h);
+/* The host calls this before each frame. */
+void nj_gles_frame_begin(void);
+/* Whether the previous frame drew a scaled overlay (touches must then be mapped back). */
+bool nj_gles_hud_scaled(void);
+float nj_gles_hud_scale_factor(void);
+
+/* Decode ATC textures to RGBA8 before upload (true on iOS, whose GPUs lack ATC). */
+extern bool nj_gles_decode_atc;
+
+/* Headless stub (runtime/headless/gles_stub.c) diagnostics. */
+void gles_stub_frame(void);           /* call once per presented frame */
+void gles_stub_report(FILE *out);
+unsigned gles_stub_frames(void);
+unsigned gles_stub_draws_last_frame(void);
+const char *gles_stub_last_shader_source(void);
+const void *gles_stub_last_attrib_pointer(void);
+const void *gles_stub_last_draw_indices(void);
+unsigned gles_stub_compressed_format_count(unsigned internalformat);
+unsigned gles_stub_teximage_count(unsigned format, unsigned type);
+void gles_stub_last_viewport(int out[4]);
+
+#endif
